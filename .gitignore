@@ -1,0 +1,17 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn.lock
+.pnpm-store/
+dist/
+.build/
+.next/
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+# OS/editor
+.DS_Store
+Thumbs.db
+*.swp

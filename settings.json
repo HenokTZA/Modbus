@@ -1,0 +1,29 @@
+{
+  "upstream": {
+    "port": "/dev/ttySC0",
+    "baudrate": 9600,
+    "parity": "N",
+    "stopbits": 1,
+    "bytesize": 8,
+    "device_unit_id": 1,
+    "poll_period_s": 1
+  },
+  "mirror_rtu": {
+    "port": "/dev/ttySC1",
+    "baudrate": 9600,
+    "parity": "N",
+    "stopbits": 1,
+    "bytesize": 8
+  },
+  "tcp": {
+    "port": 1506
+  },
+  "local_units": {
+    "unit0_id": 1,
+    "unit1_id": 2
+  },
+  "hr": {
+    "start": 0,
+    "count": 24
+  }
+}
