@@ -20,6 +20,7 @@ import time
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
+from contextlib import asynccontextmanager
 
 app = FastAPI()
 
@@ -84,6 +85,112 @@ DEFAULT_SETTINGS = {
 # ---------- Settings helpers ----------
 SETTINGS_LOCK = asyncio.Lock()
 SETTINGS: Dict[str, Any] = {}
+
+
+@asynccontextmanager
+async def maybe_lock(lock):
+
+    if lock is None:
+        yield
+        return
+
+    # asyncio-style lock?
+    if hasattr(lock, "__aenter__"):
+        async with lock:  # type: ignore[func-returns-value]
+            yield
+        return
+
+    # threading-style lock?
+    if hasattr(lock, "acquire") and hasattr(lock, "release"):
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, lock.acquire)
+        try:
+            yield
+        finally:
+            lock.release()
+        return
+
+    # fallback no-op if it's not a lock
+    yield
+
+
+# ---------- NEW: Alarm & State model helpers ----------
+
+def _bit(v: int, n: int) -> int:
+    return 1 if (int(v) >> n) & 1 else 0
+
+def build_measurements_from_hr(hr: list[int]) -> dict:
+    # Follows scaling rules in the PDF for HR[0..9]
+    return {
+        "battery_voltage_v": round(hr[0] / 10.0, 1),        # HR0 /10
+        "load_voltage_v": round(hr[1] / 10.0, 1),           # HR1 /10
+        "battery_current_a": round(hr[2] / 10.0, 1),        # HR2 /10
+        "load_current_a": round(hr[3] / 10.0, 1),           # HR3 /10
+        "total_current_a": round(hr[4] / 10.0, 1),          # HR4 /10
+        "ac_rn_v": hr[5],                                   # HR5 raw
+        "ac_sn_v": hr[6],                                   # HR6 raw
+        "ac_tn_v": hr[7],                                   # HR7 raw
+        "ambient_temp_c": round(hr[8] / 10.0, 1),           # HR8 /10
+        "ambient_temp_max_c": round(hr[9] / 10.0, 1)        # HR9 /10
+    }
+
+def build_alarms_from_bits(hr10: int, hr11: int) -> list[dict]:
+    # Bit=1 => ACTIVA (red), Bit=0 => NORMAL (green)
+    # Each item returns: {"key","label","active"}
+    items = [
+        {"key": "polo_tierra", "label": "POLO A TIERRA",            "active": _bit(hr10, 0) == 1},  # HR10 bit0
+        {"key": "alta_v_bat", "label": "ALTA TENSIÓN BATERÍA",      "active": _bit(hr10, 1) == 1},  # HR10 bit1
+        {"key": "baja_v_bat", "label": "BAJA TENSIÓN BATERÍA",      "active": _bit(hr10, 2) == 1},  # HR10 bit2
+        {"key": "incom_consumo", "label": "INCOMUNICACIÓN CONSUMO","active": _bit(hr11, 0) == 1},  # HR11 bit0
+        {"key": "red_ca_anormal", "label": "RED C.A. ANORMAL",      "active": _bit(hr11, 3) == 1},  # HR11 bit3
+        {"key": "alta_v_consumo","label": "ALTA TENSIÓN CONSUMO",   "active": _bit(hr11, 4) == 1},  # HR11 bit4
+        {"key": "baja_v_consumo","label": "BAJA TENSIÓN CONSUMO",   "active": _bit(hr11, 5) == 1},  # HR11 bit5
+        {"key": "fusible_abierto","label": "FUSIBLE ABIERTO",       "active": _bit(hr11, 7) == 1},  # HR11 bit7
+        {"key": "alta_temp", "label": "ALTA TEMPERATURA",           "active": _bit(hr11, 2) == 1},  # HR11 bit2
+    ]
+    return items
+
+def build_operating_state(hr10: int, hr11: int, hr12: int) -> list[dict]:
+    # Colors per PDF:
+    # RECTIFICADOR: 1 => ENCENDIDO (green), 0 => APAGADO (red)   (HR10 bit7)
+    # BATERÍA EN:   HR12: 1 => CARGA (green), 0 => DESCARGA (red)
+    # MODO CARGA:   HR10 bit5: 1 => MANUAL (orange), 0 => AUTOMÁTICO (green)
+    # NIVEL CARGA:  HR10 bit4: 1 => FONDO (black), 0 => FLOTE (black)
+    # TIMER NiCd:   HR11 bit6: 1 => INICIADO (black), 0 => DESACTIVADO (black)
+    return [
+        {
+            "key": "rectificador",
+            "label": "RECTIFICADOR",
+            "value": "ENCENDIDO" if _bit(hr10, 7) else "APAGADO",
+            "color": "green" if _bit(hr10, 7) else "red"
+        },
+        {
+            "key": "bat_sentido",
+            "label": "BATERÍA EN",
+            "value": "CARGA" if hr12 == 1 else "DESCARGA",
+            "color": "green" if hr12 == 1 else "red"
+        },
+        {
+            "key": "modo_carga",
+            "label": "MODO DE CARGA",
+            "value": "MANUAL" if _bit(hr10, 5) else "AUTOMÁTICO",
+            "color": "orange" if _bit(hr10, 5) else "green"
+        },
+        {
+            "key": "nivel_carga",
+            "label": "NIVEL DE CARGA",
+            "value": "FONDO" if _bit(hr10, 4) else "FLOTE",
+            "color": "black"
+        },
+        {
+            "key": "timer_nicd",
+            "label": "TIMER NiCd",
+            "value": "INICIADO" if _bit(hr11, 6) else "DESACTIVADO",
+            "color": "black"
+        },
+    ]
+
+
 
 def _deep_merge(defs, cur):
     if isinstance(defs, dict):
@@ -480,6 +587,106 @@ async def mirror_rtu_server_manager():
 
 # ================== Web API & Dashboard ==================
 #app = FastAPI()
+
+"""
+@app.get("/api/alarms2")
+async def api_alarms2():
+    # assumes you already have a thread-safe way to read current HRs (e.g., HR_BLOCK or cached array)
+    with HR_LOCK:
+        hr = list(HR_VIEW)  # or whatever your current snapshot array is
+    hr10, hr11 = hr[10], hr[11]
+    return {
+        "items": build_alarms_from_bits(hr10, hr11)
+    }
+
+@app.get("/api/states2")
+async def api_states2():
+    with HR_LOCK:
+        hr = list(HR_VIEW)
+    hr10, hr11, hr12 = hr[10], hr[11], hr[12]
+    return {
+        "items": build_operating_state(hr10, hr11, hr12)
+    }
+
+@app.get("/api/meas2")
+async def api_meas2():
+    with HR_LOCK:
+        hr = list(HR_VIEW)
+    return build_measurements_from_hr(hr)
+"""
+
+
+@app.get("/api/alarms2")
+async def api_alarms2():
+    try:
+        async with maybe_lock(HR_LOCK):
+            # read your latest HR/derived bits here
+            raw = HR[0:24]  # or however you snapshot it
+            a1 = raw[10] if len(raw) > 10 else 0
+            a2 = raw[11] if len(raw) > 11 else 0
+            def bit(v, n): return 1 if ((v >> n) & 1) else 0
+
+            items = [
+                {"key": "polo_tierra",     "label": "POLO A TIERRA",        "active": bit(a1,0)==1},
+                {"key": "alta_v_bat",      "label": "ALTA TENSIÓN BATERÍA", "active": bit(a1,1)==1},
+                {"key": "baja_v_bat",      "label": "BAJA TENSIÓN BATERÍA", "active": bit(a1,2)==1},
+                {"key": "incom_consumo",   "label": "INCOMUNICACIÓN CONSUMO","active": bit(a2,0)==1},
+                {"key": "red_ca_anormal",  "label": "RED C.A. ANORMAL",     "active": bit(a2,3)==1},
+                {"key": "alta_v_consumo",  "label": "ALTA TENSIÓN CONSUMO", "active": bit(a2,4)==1},
+                {"key": "baja_v_consumo",  "label": "BAJA TENSIÓN CONSUMO", "active": bit(a2,5)==1},
+                {"key": "fusible_abierto", "label": "FUSIBLE ABIERTO",      "active": bit(a2,7)==1},
+                {"key": "alta_temp",       "label": "ALTA TEMPERATURA",     "active": bit(a2,2)==1},
+            ]
+        return {"items": items}
+    except Exception as e:
+        # Never 500 the UI for this; return safe structure
+        return {"items": [], "error": str(e)}
+
+
+@app.get("/api/meas2")
+async def api_meas2():
+    try:
+        async with maybe_lock(HR_LOCK):
+            raw = HR[0:24]  # or your snapshot method
+            s = SCALED      # if you already compute scaled dict elsewhere
+            # Build the structure the frontend expects
+            return {
+                "battery_voltage_v": float(s.get("BATTERY_VOLTAGE_V", (raw[0]/10 if len(raw)>0 else 0))),
+                "load_voltage_v":    float(s.get("LOAD_VOLTAGE_V",    (raw[1]/10 if len(raw)>1 else 0))),
+                "battery_current_a": float(s.get("BATTERY_CURRENT_A", (raw[2]/10 if len(raw)>2 else 0))),
+                "load_current_a":    float(s.get("LOAD_CURRENT_A",    (raw[3]/10 if len(raw)>3 else 0))),
+                "total_current_a":   float(s.get("TOTAL_CURRENT_A",   (raw[4]/10 if len(raw)>4 else 0))),
+                "ac_rn_v":           int(raw[5])  if len(raw)>5  else 0,
+                "ac_sn_v":           int(raw[6])  if len(raw)>6  else 0,
+                "ac_tn_v":           int(raw[7])  if len(raw)>7  else 0,
+                "ambient_temp_c":     float(s.get("AMBIENT_TEMP_C",      (raw[8]/10 if len(raw)>8 else 0))),
+                "ambient_temp_max_c": float(s.get("AMBIENT_TEMP_MAX_C",  (raw[9]/10 if len(raw)>9 else 0))),
+            }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/states2")
+async def api_states2():
+    try:
+        async with maybe_lock(HR_LOCK):
+            raw = HR[0:24]
+            a1 = raw[10] if len(raw) > 10 else 0
+            a2 = raw[11] if len(raw) > 11 else 0
+            mode_raw = raw[12] if len(raw) > 12 else 0
+            def bit(v, n): return 1 if ((v >> n) & 1) else 0
+
+            items = [
+                {"key":"rectificador","label":"RECTIFICADOR","value":"ENCENDIDO" if bit(a1,7) else "APAGADO","color": "green" if bit(a1,7) else "red"},
+                {"key":"bat_sentido","label":"BATERÍA EN","value":"CARGA" if mode_raw==1 else "DESCARGA","color":"green" if mode_raw==1 else "red"},
+                {"key":"modo_carga","label":"MODO DE CARGA","value":"MANUAL" if bit(a1,5) else "AUTOMÁTICO","color":"orange" if bit(a1,5) else "green"},
+                {"key":"nivel_carga","label":"NIVEL DE CARGA","value":"FONDO" if bit(a1,4) else "FLOTE","color":"black"},
+                {"key":"timer_nicd","label":"TIMER NiCd","value":"INICIADO" if bit(a2,6) else "DESACTIVADO","color":"black"},
+            ]
+        return {"items": items}
+    except Exception as e:
+        return {"items": [], "error": str(e)}
+
 
 
 @app.get("/api/alarms")
