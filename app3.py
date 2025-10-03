@@ -87,6 +87,12 @@ SETTINGS_LOCK = asyncio.Lock()
 SETTINGS: Dict[str, Any] = {}
 
 
+async def snapshot_regs() -> list[int]:
+    """Return a safe snapshot of the 0-based HR window."""
+    async with HR_LOCK:
+        return _hr_block0().getValues(0, S()["hr"]["count"])
+
+
 @asynccontextmanager
 async def maybe_lock(lock):
 
@@ -616,76 +622,97 @@ async def api_meas2():
 """
 
 
-@app.get("/api/alarms2")
-async def api_alarms2():
-    try:
-        async with maybe_lock(HR_LOCK):
-            # read your latest HR/derived bits here
-            raw = HR[0:24]  # or however you snapshot it
-            a1 = raw[10] if len(raw) > 10 else 0
-            a2 = raw[11] if len(raw) > 11 else 0
-            def bit(v, n): return 1 if ((v >> n) & 1) else 0
-
-            items = [
-                {"key": "polo_tierra",     "label": "POLO A TIERRA",        "active": bit(a1,0)==1},
-                {"key": "alta_v_bat",      "label": "ALTA TENSIÓN BATERÍA", "active": bit(a1,1)==1},
-                {"key": "baja_v_bat",      "label": "BAJA TENSIÓN BATERÍA", "active": bit(a1,2)==1},
-                {"key": "incom_consumo",   "label": "INCOMUNICACIÓN CONSUMO","active": bit(a2,0)==1},
-                {"key": "red_ca_anormal",  "label": "RED C.A. ANORMAL",     "active": bit(a2,3)==1},
-                {"key": "alta_v_consumo",  "label": "ALTA TENSIÓN CONSUMO", "active": bit(a2,4)==1},
-                {"key": "baja_v_consumo",  "label": "BAJA TENSIÓN CONSUMO", "active": bit(a2,5)==1},
-                {"key": "fusible_abierto", "label": "FUSIBLE ABIERTO",      "active": bit(a2,7)==1},
-                {"key": "alta_temp",       "label": "ALTA TEMPERATURA",     "active": bit(a2,2)==1},
-            ]
-        return {"items": items}
-    except Exception as e:
-        # Never 500 the UI for this; return safe structure
-        return {"items": [], "error": str(e)}
-
-
 @app.get("/api/meas2")
 async def api_meas2():
     try:
-        async with maybe_lock(HR_LOCK):
-            raw = HR[0:24]  # or your snapshot method
-            s = SCALED      # if you already compute scaled dict elsewhere
-            # Build the structure the frontend expects
-            return {
-                "battery_voltage_v": float(s.get("BATTERY_VOLTAGE_V", (raw[0]/10 if len(raw)>0 else 0))),
-                "load_voltage_v":    float(s.get("LOAD_VOLTAGE_V",    (raw[1]/10 if len(raw)>1 else 0))),
-                "battery_current_a": float(s.get("BATTERY_CURRENT_A", (raw[2]/10 if len(raw)>2 else 0))),
-                "load_current_a":    float(s.get("LOAD_CURRENT_A",    (raw[3]/10 if len(raw)>3 else 0))),
-                "total_current_a":   float(s.get("TOTAL_CURRENT_A",   (raw[4]/10 if len(raw)>4 else 0))),
-                "ac_rn_v":           int(raw[5])  if len(raw)>5  else 0,
-                "ac_sn_v":           int(raw[6])  if len(raw)>6  else 0,
-                "ac_tn_v":           int(raw[7])  if len(raw)>7  else 0,
-                "ambient_temp_c":     float(s.get("AMBIENT_TEMP_C",      (raw[8]/10 if len(raw)>8 else 0))),
-                "ambient_temp_max_c": float(s.get("AMBIENT_TEMP_MAX_C",  (raw[9]/10 if len(raw)>9 else 0))),
-            }
+        hr = await snapshot_regs()
+        # guard for length
+        def r(i, default=0): return hr[i] if i < len(hr) else default
+
+        return {
+            "battery_voltage_v": round(r(0) / 10.0, 1),
+            "load_voltage_v":    round(r(1) / 10.0, 1),
+            "battery_current_a": round(r(2) / 10.0, 1),
+            "load_current_a":    round(r(3) / 10.0, 1),
+            "total_current_a":   round(r(4) / 10.0, 1),
+            "ac_rn_v":           int(r(5)),
+            "ac_sn_v":           int(r(6)),
+            "ac_tn_v":           int(r(7)),
+            "ambient_temp_c":    round(r(8) / 10.0, 1),
+            "ambient_temp_max_c":round(r(9) / 10.0, 1),
+        }
     except Exception as e:
         return {"error": str(e)}
+
+
+
+@app.get("/api/alarms2")
+async def api_alarms2():
+    try:
+        hr = await snapshot_regs()
+        a1 = hr[10] if len(hr) > 10 else 0
+        a2 = hr[11] if len(hr) > 11 else 0
+        def bit(v, n): return 1 if ((int(v) >> n) & 1) else 0
+
+        items = [
+            {"key": "polo_tierra",     "label": "POLO A TIERRA",          "active": bit(a1,0)==1},
+            {"key": "alta_v_bat",      "label": "ALTA TENSIÓN BATERÍA",   "active": bit(a1,1)==1},
+            {"key": "baja_v_bat",      "label": "BAJA TENSIÓN BATERÍA",   "active": bit(a1,2)==1},
+            {"key": "incom_consumo",   "label": "INCOMUNICACIÓN CONSUMO", "active": bit(a2,0)==1},
+            {"key": "red_ca_anormal",  "label": "RED C.A. ANORMAL",       "active": bit(a2,3)==1},
+            {"key": "alta_v_consumo",  "label": "ALTA TENSIÓN CONSUMO",   "active": bit(a2,4)==1},
+            {"key": "baja_v_consumo",  "label": "BAJA TENSIÓN CONSUMO",   "active": bit(a2,5)==1},
+            {"key": "fusible_abierto", "label": "FUSIBLE ABIERTO",        "active": bit(a2,7)==1},
+            {"key": "alta_temp",       "label": "ALTA TEMPERATURA",       "active": bit(a2,2)==1},
+        ]
+        return {"items": items}
+    except Exception as e:
+        return {"items": [], "error": str(e)}
+
+
 
 
 @app.get("/api/states2")
 async def api_states2():
     try:
-        async with maybe_lock(HR_LOCK):
-            raw = HR[0:24]
-            a1 = raw[10] if len(raw) > 10 else 0
-            a2 = raw[11] if len(raw) > 11 else 0
-            mode_raw = raw[12] if len(raw) > 12 else 0
-            def bit(v, n): return 1 if ((v >> n) & 1) else 0
+        hr = await snapshot_regs()
+        a1 = hr[10] if len(hr) > 10 else 0
+        a2 = hr[11] if len(hr) > 11 else 0
+        hr12 = hr[12] if len(hr) > 12 else 0
+        def bit(v, n): return 1 if ((int(v) >> n) & 1) else 0
 
-            items = [
-                {"key":"rectificador","label":"RECTIFICADOR","value":"ENCENDIDO" if bit(a1,7) else "APAGADO","color": "green" if bit(a1,7) else "red"},
-                {"key":"bat_sentido","label":"BATERÍA EN","value":"CARGA" if mode_raw==1 else "DESCARGA","color":"green" if mode_raw==1 else "red"},
-                {"key":"modo_carga","label":"MODO DE CARGA","value":"MANUAL" if bit(a1,5) else "AUTOMÁTICO","color":"orange" if bit(a1,5) else "green"},
-                {"key":"nivel_carga","label":"NIVEL DE CARGA","value":"FONDO" if bit(a1,4) else "FLOTE","color":"black"},
-                {"key":"timer_nicd","label":"TIMER NiCd","value":"INICIADO" if bit(a2,6) else "DESACTIVADO","color":"black"},
-            ]
+        items = [
+            {
+                "key":"rectificador","label":"RECTIFICADOR",
+                "value":"ENCENDIDO" if bit(a1,7) else "APAGADO",
+                "color": "green" if bit(a1,7) else "red"
+            },
+            {
+                "key":"bat_sentido","label":"BATERÍA EN",
+                "value":"CARGA" if hr12==1 else "DESCARGA",
+                "color":"green" if hr12==1 else "red"
+            },
+            {
+                "key":"modo_carga","label":"MODO DE CARGA",
+                "value":"MANUAL" if bit(a1,5) else "AUTOMÁTICO",
+                "color":"orange" if bit(a1,5) else "green"
+            },
+            {
+                "key":"nivel_carga","label":"NIVEL DE CARGA",
+                "value":"FONDO" if bit(a1,4) else "FLOTE",
+                "color":"black"
+            },
+            {
+                "key":"timer_nicd","label":"TIMER NiCd",
+                "value":"INICIADO" if bit(a2,6) else "DESACTIVADO",
+                "color":"black"
+            },
+        ]
         return {"items": items}
     except Exception as e:
         return {"items": [], "error": str(e)}
+
+
 
 
 
