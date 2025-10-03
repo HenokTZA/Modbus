@@ -50,7 +50,20 @@ DEFAULT_SETTINGS = {
     "hr": {                       # mirrored HR window (hot-reloadable)
         "start": 0,
         "count": 24
+    },
+
+    "branding": {
+        "phone": "011-4639-8310",
+        "email": "info@adaxtecna.com",
+        "youtube": "https://www.youtube.com/@adaxtecna",
+        "logo_url": "",             # e.g. "/static/adax_logo.png" (optional)
+        "qr_url": ""                # If empty, the dashboard will auto-generate from youtube link
+    },
+    "device": {
+        "model": ""                 # user-entered, e.g. "CEA-24/20"
     }
+    # keep existing "hr", "tcp", "upstream", etc.
+
 }
 # =====================================================
 

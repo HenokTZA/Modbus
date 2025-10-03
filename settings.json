@@ -25,5 +25,15 @@
   "hr": {
     "start": 0,
     "count": 24
+  },
+  "branding": {
+    "phone": "011-4639-8310",
+    "email": "info@adaxtecna.com",
+    "youtube": "https://www.youtube.com/@adaxtecna",
+    "logo_url": "",
+    "qr_url": ""
+  },
+  "device": {
+    "model": ""
   }
 }
