@@ -66,7 +66,7 @@
       <div class="qr"><img id="qrImg" alt="QR"></div>
     </div>
     <div class="top-right">
-      <img id="logoImg" class="logo" alt="Logo" />
+      <img id="logoImg" class="logo" alt="Logo" src="/static/adax_logo.png" />
       <a id="ytLink" class="yt" href="#" target="_blank">Visit our YouTube channel</a>
       <div class="model-line">
         <span id="modelLine">RECTIFIER ADAX TECNA MODEL: CEA — SERIAL NO: —</span>
@@ -179,6 +179,10 @@
 <div id="toast" class="toast"></div>
 
 <script>
+  
+ 
+
+
   const names = [
     "BATTERY_VOLTAGE_V","LOAD_VOLTAGE_V","BATTERY_CURRENT_A","LOAD_CURRENT_A","TOTAL_CURRENT_A",
     "AC_VOLTAGE_RN_raw","AC_VOLTAGE_SN_raw","AC_VOLTAGE_TN_raw",
@@ -195,7 +199,7 @@
     const b = js.branding || {};
     const d = js.device || {};
     const phone = b.phone || "";
-    const email = b.email || "";
+   const email = b.email || "";
     const yt = b.youtube || "";
     const logo = b.logo_url || "";
     const qrUrl = b.qr_url || "";
