@@ -16,6 +16,20 @@ import uvicorn
 from alarms import AlarmsEngine
 import time
 
+
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+
+
+app = FastAPI()
+
+# serve ./static at /static (use absolute path so it works no matter the cwd)
+app.mount(
+    "/static",
+    StaticFiles(directory=str(Path(__file__).parent / "static")),
+    name="static",
+)
+
 ALARM_ENGINE = AlarmsEngine()
 LAST_GOOD_POLL_MONO = None  # monotonic() timestamp of last successful upstream poll
 
@@ -56,7 +70,7 @@ DEFAULT_SETTINGS = {
         "phone": "011-4639-8310",
         "email": "info@adaxtecna.com",
         "youtube": "https://www.youtube.com/@adaxtecna",
-        "logo_url": "",             # e.g. "/static/adax_logo.png" (optional)
+        "logo_url": "/static/adax_logo.png",             # e.g. "/static/adax_logo.png" (optional)
         "qr_url": ""                # If empty, the dashboard will auto-generate from youtube link
     },
     "device": {
@@ -465,7 +479,7 @@ async def mirror_rtu_server_manager():
 
 
 # ================== Web API & Dashboard ==================
-app = FastAPI()
+#app = FastAPI()
 
 
 @app.get("/api/alarms")
