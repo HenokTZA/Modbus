@@ -10,7 +10,7 @@
   },
   "mirror_rtu": {
     "port": "/dev/ttySC1",
-    "baudrate": 9600,
+    "baudrate": 115200,
     "parity": "N",
     "stopbits": 1,
     "bytesize": 8
@@ -19,7 +19,7 @@
     "port": 1507
   },
   "local_units": {
-    "unit0_id": 1,
+    "unit0_id": 2,
     "unit1_id": 1
   },
   "hr": {
