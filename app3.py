@@ -422,86 +422,6 @@ async def poll_upstream_and_update_cache():
         await _safe_close(client)
 
 
-"""
-async def tcp_server_manager():
-
-    current_port = None
-    server_task: asyncio.Task = None
-
-    async def start_server(port: int):
-        async def run():
-            await StartAsyncTcpServer(
-                context=context,
-                address=("0.0.0.0", port),
-                ignore_missing_slaves=True,
-            )
-        return asyncio.create_task(run())
-
-    try:
-        while True:
-            desired_port = S()["tcp"]["port"]
-            if desired_port != current_port or (server_task and server_task.done()):
-                # (Re)start
-                if server_task and not server_task.done():
-                    server_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError): await server_task
-                current_port = desired_port
-                server_task = start_server(current_port)
-                print(f"[TCP] listening on 0.0.0.0:{current_port}")
-
-            # wait for reload signal or small sleep
-            try:
-                await asyncio.wait_for(tcp_reload_event.wait(), timeout=1.0)
-                tcp_reload_event.clear()
-            except asyncio.TimeoutError:
-                pass
-    finally:
-        if server_task and not server_task.done():
-            server_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError): await server_task
-
-async def mirror_rtu_server_manager():
-
-    current = {}
-    server_task: asyncio.Task = None
-
-    async def start_server(cfg):
-        async def run():
-            await StartAsyncSerialServer(
-                context=context,
-                framer=FramerType.RTU,
-                port=cfg["port"],
-                baudrate=cfg["baudrate"],
-                parity=cfg["parity"],
-                stopbits=cfg["stopbits"],
-                bytesize=cfg["bytesize"],
-                timeout=1
-            )
-        return asyncio.create_task(run())
-
-    try:
-        while True:
-            cfg = S()["mirror_rtu"]
-            changed = any(cfg.get(k) != current.get(k) for k in ["port","baudrate","parity","stopbits","bytesize"])
-            if changed or server_task is None or server_task.done():
-                if server_task and not server_task.done():
-                    server_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError): await server_task
-                current = cfg.copy()
-                server_task = start_server(current)
-                print(f"[RTU mirror] {current['port']} {current['baudrate']} {current['parity']} {current['stopbits']} {current['bytesize']}")
-
-            try:
-                await asyncio.wait_for(mirror_reload_event.wait(), timeout=1.0)
-                mirror_reload_event.clear()
-            except asyncio.TimeoutError:
-                pass
-    finally:
-        if server_task and not server_task.done():
-            server_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError): await server_task
-
-"""
 
 
 async def tcp_server_manager():
@@ -594,32 +514,6 @@ async def mirror_rtu_server_manager():
 # ================== Web API & Dashboard ==================
 #app = FastAPI()
 
-"""
-@app.get("/api/alarms2")
-async def api_alarms2():
-    # assumes you already have a thread-safe way to read current HRs (e.g., HR_BLOCK or cached array)
-    with HR_LOCK:
-        hr = list(HR_VIEW)  # or whatever your current snapshot array is
-    hr10, hr11 = hr[10], hr[11]
-    return {
-        "items": build_alarms_from_bits(hr10, hr11)
-    }
-
-@app.get("/api/states2")
-async def api_states2():
-    with HR_LOCK:
-        hr = list(HR_VIEW)
-    hr10, hr11, hr12 = hr[10], hr[11], hr[12]
-    return {
-        "items": build_operating_state(hr10, hr11, hr12)
-    }
-
-@app.get("/api/meas2")
-async def api_meas2():
-    with HR_LOCK:
-        hr = list(HR_VIEW)
-    return build_measurements_from_hr(hr)
-"""
 
 
 @app.get("/api/meas2")
@@ -777,53 +671,7 @@ async def api_debug_store():
 async def get_settings():
     async with SETTINGS_LOCK:
         return JSONResponse(S())
-"""
-@app.put("/api/settings")
-async def put_settings(payload: Dict[str, Any] = Body(...)):
-    # Merge & save
-    async with SETTINGS_LOCK:
-        current = load_settings_from_disk()
-        def deep_merge(dst, src):
-            for k, v in src.items():
-                if isinstance(v, dict) and isinstance(dst.get(k), dict):
-                    deep_merge(dst[k], v)
-                else:
-                    dst[k] = v
-        deep_merge(current, payload)
-        try:
-            await save_settings_to_disk(current)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to save settings: {e}")
 
-        # detect what changed
-        prev = SETTINGS.copy()
-        SETTINGS.clear()
-        SETTINGS.update(current)
-
-    # Hot actions:
-    # 1) If HR window or local unit IDs changed -> rebuild stores/context
-    need_rebuild = (
-        prev.get("hr", {}) != S().get("hr", {}) or
-        prev.get("local_units", {}) != S().get("local_units", {})
-    )
-    if need_rebuild:
-        await rebuild_datastores_and_context()
-        # Nudge servers to pick up new context map
-        tcp_reload_event.set()
-        mirror_reload_event.set()
-
-    # 2) If TCP changed -> nudge TCP manager
-    if prev.get("tcp", {}) != S().get("tcp", {}):
-        tcp_reload_event.set()
-
-    # 3) If mirror RTU changed -> nudge mirror manager
-    if prev.get("mirror_rtu", {}) != S().get("mirror_rtu", {}):
-        mirror_reload_event.set()
-
-    # 4) Upstream RTU is handled live in the poller
-
-    return JSONResponse({"ok": True})
-"""
 
 @app.put("/api/settings")
 async def put_settings(payload: Dict[str, Any] = Body(...)):

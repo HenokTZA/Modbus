@@ -75,105 +75,6 @@
     .topbar-inner{grid-template-columns:1fr;gap:12px}
     .top-right{align-items:flex-start}
   }
-  .topbar{background:#bcd5e8;color:#073b5a}
-.topbar-inner{
-  max-width:1400px;
-  margin:0 auto;
-  padding:8px 12px;
-  display:grid;
-  /* Four columns: contacts | logo+yt | QR | model/serial */
-  grid-template-columns: 1fr auto auto 1fr;
-  gap:16px;
-  align-items:center;
-}
-
-/* Left column (contacts) */
-.top-left{
-  display:flex;
-  flex-direction:column;
-  gap:6px;
-  font-weight:600;
-}
-.top-left a{color:#0a4f79;text-decoration:none}
-
-/* Middle-left column (logo + yt link) */
-.top-logo{
-  display:flex;
-  flex-direction:column;
-  align-items:center;   /* center horizontally */
-  justify-content:center;
-  gap:8px;
-}
-/* Make the logo larger (tweak height to taste) */
-.logo{
-  height:90px;          /* was 36px; increase as needed */
-  object-fit:contain;
-}
-/* Center the YouTube link under the logo */
-.yt{
-  color:#0a4f79;
-  text-decoration:none;
-  font-weight:700;
-  text-align:center;    /* center text under the logo */
-}
-
-/* Middle-right column (QR) */
-.top-center{
-  display:flex;
-  align-items:center;
-  justify-content:center;
-}
-.qr{
-  width:120px;          /* slightly bigger QR to balance the bigger logo */
-  height:120px;
-  border-radius:6px;
-  background:#fff;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  overflow:hidden;
-}
-.qr img{width:120px;height:120px;display:block}
-
-/* Right column (model/serial) */
-.top-model{
-  display:flex;
-  align-items:center;
-  justify-content:center; /* center the whole block */
-}
-.model-line{
-  background:#a7c8de;
-  font-weight:700;
-  padding:10px 12px;
-  border-radius:6px;
-  text-align:center;      /* center the text inside the pill */
-}
-.model-line span{color:#062e46}
-
-/* Responsive: stack nicely on small screens */
-@media (max-width: 900px){
-  .topbar-inner{
-    grid-template-columns: 1fr 1fr;  /* two columns */
-  }
-  .top-left{grid-column:auto}
-  .top-logo{grid-column:auto}
-  .top-center{grid-column:auto}
-  .top-model{grid-column:1 / -1}     /* model/serial spans full width */
-}
-
-@media (max-width: 640px){
-  .topbar-inner{
-    grid-template-columns: 1fr;      /* single column */
-    gap:12px;
-  }
-  .top-left, .top-logo, .top-center, .top-model{
-    justify-content:center;
-    align-items:center;
-    text-align:center;
-  }
-  .top-left a{display:inline-block}
-}
-
 </style>
 
 <!-- ====== Full-screen PIN Gate ====== -->
@@ -192,32 +93,22 @@
 <!-- ====== Top company strip ====== -->
 <div class="topbar">
   <div class="topbar-inner">
-    <!-- Left: phone/email -->
     <div class="top-left">
       <div>📞 <a id="phoneLink" href="#">011-4639-8310</a></div>
       <div>✉️ <a id="emailLink" href="#">info@adaxtecna.com</a></div>
     </div>
-
-    <!-- New middle-left: BIG logo + centered YouTube link -->
-    <div class="top-logo">
-      <img id="logoImg" class="logo" alt="Logo" src="/static/adax_logo.png"/>
-      <a id="ytLink" class="yt" href="#" target="_blank">Visite nuestro canal de YouTube</a>
-    </div>
-
-    <!-- Middle-right: QR -->
     <div class="top-center">
       <div class="qr"><img id="qrImg" alt="QR"></div>
     </div>
-
-    <!-- Right: centered model/serial line -->
-    <div class="top-model">
+    <div class="top-right">
+      <img id="logoImg" class="logo" alt="Logo" src="/static/adax_logo.png"/>
+      <a id="ytLink" class="yt" href="#" target="_blank">Visite nuestro canal de YouTube</a>
       <div class="model-line">
         <span id="modelLine">RECTIFICADOR ADAX TECNA MODELO: CEA — N° SERIE: —</span>
       </div>
     </div>
   </div>
 </div>
-
 
 <header>
   <div id="i.appTitle">Modbus Mirror • Panel en Vivo</div>

@@ -75,105 +75,6 @@
     .topbar-inner{grid-template-columns:1fr;gap:12px}
     .top-right{align-items:flex-start}
   }
-  .topbar{background:#bcd5e8;color:#073b5a}
-.topbar-inner{
-  max-width:1400px;
-  margin:0 auto;
-  padding:8px 12px;
-  display:grid;
-  /* Four columns: contacts | logo+yt | QR | model/serial */
-  grid-template-columns: 1fr auto auto 1fr;
-  gap:16px;
-  align-items:center;
-}
-
-/* Left column (contacts) */
-.top-left{
-  display:flex;
-  flex-direction:column;
-  gap:6px;
-  font-weight:600;
-}
-.top-left a{color:#0a4f79;text-decoration:none}
-
-/* Middle-left column (logo + yt link) */
-.top-logo{
-  display:flex;
-  flex-direction:column;
-  align-items:center;   /* center horizontally */
-  justify-content:center;
-  gap:8px;
-}
-/* Make the logo larger (tweak height to taste) */
-.logo{
-  height:90px;          /* was 36px; increase as needed */
-  object-fit:contain;
-}
-/* Center the YouTube link under the logo */
-.yt{
-  color:#0a4f79;
-  text-decoration:none;
-  font-weight:700;
-  text-align:center;    /* center text under the logo */
-}
-
-/* Middle-right column (QR) */
-.top-center{
-  display:flex;
-  align-items:center;
-  justify-content:center;
-}
-.qr{
-  width:120px;          /* slightly bigger QR to balance the bigger logo */
-  height:120px;
-  border-radius:6px;
-  background:#fff;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  overflow:hidden;
-}
-.qr img{width:120px;height:120px;display:block}
-
-/* Right column (model/serial) */
-.top-model{
-  display:flex;
-  align-items:center;
-  justify-content:center; /* center the whole block */
-}
-.model-line{
-  background:#a7c8de;
-  font-weight:700;
-  padding:10px 12px;
-  border-radius:6px;
-  text-align:center;      /* center the text inside the pill */
-}
-.model-line span{color:#062e46}
-
-/* Responsive: stack nicely on small screens */
-@media (max-width: 900px){
-  .topbar-inner{
-    grid-template-columns: 1fr 1fr;  /* two columns */
-  }
-  .top-left{grid-column:auto}
-  .top-logo{grid-column:auto}
-  .top-center{grid-column:auto}
-  .top-model{grid-column:1 / -1}     /* model/serial spans full width */
-}
-
-@media (max-width: 640px){
-  .topbar-inner{
-    grid-template-columns: 1fr;      /* single column */
-    gap:12px;
-  }
-  .top-left, .top-logo, .top-center, .top-model{
-    justify-content:center;
-    align-items:center;
-    text-align:center;
-  }
-  .top-left a{display:inline-block}
-}
-
 </style>
 
 <!-- ====== Full-screen PIN Gate ====== -->
@@ -192,32 +93,22 @@
 <!-- ====== Top company strip ====== -->
 <div class="topbar">
   <div class="topbar-inner">
-    <!-- Left: phone/email -->
     <div class="top-left">
       <div>📞 <a id="phoneLink" href="#">011-4639-8310</a></div>
       <div>✉️ <a id="emailLink" href="#">info@adaxtecna.com</a></div>
     </div>
-
-    <!-- New middle-left: BIG logo + centered YouTube link -->
-    <div class="top-logo">
-      <img id="logoImg" class="logo" alt="Logo" src="/static/adax_logo.png"/>
-      <a id="ytLink" class="yt" href="#" target="_blank">Visite nuestro canal de YouTube</a>
-    </div>
-
-    <!-- Middle-right: QR -->
     <div class="top-center">
       <div class="qr"><img id="qrImg" alt="QR"></div>
     </div>
-
-    <!-- Right: centered model/serial line -->
-    <div class="top-model">
+    <div class="top-right">
+      <img id="logoImg" class="logo" alt="Logo" src="/static/adax_logo.png"/>
+      <a id="ytLink" class="yt" href="#" target="_blank">Visite nuestro canal de YouTube</a>
       <div class="model-line">
         <span id="modelLine">RECTIFICADOR ADAX TECNA MODELO: CEA — N° SERIE: —</span>
       </div>
     </div>
   </div>
 </div>
-
 
 <header>
   <div id="i.appTitle">Modbus Mirror • Panel en Vivo</div>
@@ -226,8 +117,7 @@
       <option value="es">Español</option>
       <option value="en">English</option>
     </select>
-    <button id="btnUserSettings" class="icon-btn" title="User Settings">👤 <span id="i.userSettingsBtn">Ajustes de Usuario</span></button>
-    <button id="btnAdminSettings" class="icon-btn" title="Admin Settings">🛠️ <span id="i.adminSettingsBtn">Ajustes de Admin</span></button>
+    <button id="btnSettings" class="icon-btn" title="Settings">⚙️ <span id="i.settingsBtn">Ajustes</span></button>
   </div>
 </header>
 
@@ -280,7 +170,7 @@
   </section>
 </main>
 
-<!-- ====== PIN Modal (reused for user/admin) ====== -->
+<!-- ====== Settings PIN Modal ====== -->
 <div id="pinBackdrop" class="modal-backdrop">
   <div class="pinbox">
     <div id="i.pinTitle" class="pin-title">Ingrese PIN de Ajustes</div>
@@ -292,7 +182,7 @@
   </div>
 </div>
 
-<!-- ====== Settings Modal (same DOM, role decides visibility) ====== -->
+<!-- ====== Settings Modal ====== -->
 <div id="backdrop" class="modal-backdrop">
   <div class="modal">
     <header><div id="i.cfgTitle">Configuración</div><button id="btnClose" class="icon-btn">✖</button></header>
@@ -328,29 +218,23 @@
         <div><label id="i.tcpPort">Puerto TCP</label><input id="tcp_port" type="number" placeholder="1502" min="1" max="65535"></div>
       </div>
 
-      <!-- BRANDING & DEVICE (hidden for user role) -->
-      <section id="secBranding" style="margin-top:16px">
-        <h3 id="i.brandTitle">Marca y Dispositivo</h3>
-        <div class="grid">
-          <div><label id="i.lblPhone">Teléfono</label><input id="brand_phone" placeholder="011-4639-8310"></div>
-          <div><label id="i.lblEmail">Email</label><input id="brand_email" placeholder="info@adaxtecna.com"></div>
-          <div><label id="i.lblYT">URL de YouTube</label><input id="brand_youtube" placeholder="https://www.youtube.com/@adaxtecna"></div>
-          <div><label id="i.lblLogo">URL del Logo</label><input id="brand_logo" placeholder="/static/adax_logo.png"></div>
-          <div><label id="i.lblQR">URL de QR (opcional)</label><input id="brand_qr" placeholder=""></div>
-          <div><label id="i.lblModel">Modelo (p.ej. CEA-24/20)</label><input id="device_model" placeholder="CEA-..."></div>
-        </div>
-      </section>
+      <h3 id="i.brandTitle" style="margin-top:16px">Marca y Dispositivo</h3>
+      <div class="grid">
+        <div><label id="i.lblPhone">Teléfono</label><input id="brand_phone" placeholder="011-4639-8310"></div>
+        <div><label id="i.lblEmail">Email</label><input id="brand_email" placeholder="info@adaxtecna.com"></div>
+        <div><label id="i.lblYT">URL de YouTube</label><input id="brand_youtube" placeholder="https://www.youtube.com/@adaxtecna"></div>
+        <div><label id="i.lblLogo">URL del Logo</label><input id="brand_logo" placeholder="/static/adax_logo.png"></div>
+        <div><label id="i.lblQR">URL de QR (opcional)</label><input id="brand_qr" placeholder=""></div>
+        <div><label id="i.lblModel">Modelo (p.ej. CEA-24/20)</label><input id="device_model" placeholder="CEA-..."></div>
+      </div>
 
-      <!-- IDS & HR (hidden for user role) -->
-      <section id="secIds" style="margin-top:16px">
-        <h3 id="i.idsTitle">IDs Locales y Rango HR</h3>
-        <div class="grid">
-          <div><label id="i.u0">Unidad 0 (panel, base 0)</label><input id="u0" type="number" min="1" max="247"></div>
-          <div><label id="i.u1">Unidad 1 (Modbus Poll, base 1)</label><input id="u1" type="number" min="1" max="247"></div>
-          <div><label id="i.hrStart">Inicio HR</label><input id="hr_start" type="number" min="0"></div>
-          <div><label id="i.hrCount">Cantidad HR</label><input id="hr_count" type="number" min="1"></div>
-        </div>
-      </section>
+      <h3 id="i.idsTitle" style="margin-top:16px">IDs Locales y Rango HR</h3>
+      <div class="grid">
+        <div><label id="i.u0">Unidad 0 (panel, base 0)</label><input id="u0" type="number" min="1" max="247"></div>
+        <div><label id="i.u1">Unidad 1 (Modbus Poll, base 1)</label><input id="u1" type="number" min="1" max="247"></div>
+        <div><label id="i.hrStart">Inicio HR</label><input id="hr_start" type="number" min="0"></div>
+        <div><label id="i.hrCount">Cantidad HR</label><input id="hr_count" type="number" min="1"></div>
+      </div>
 
       <div class="actions">
         <button class="btn" id="btnReload">Recargar</button>
@@ -367,11 +251,7 @@
   const I18N = {
     es: {
       appTitle: "Modbus Mirror • Panel en Vivo",
-      userSettingsBtn: "Ajustes de Usuario",
-      adminSettingsBtn: "Ajustes de Admin",
-      pinUserTitle: "Ingrese PIN de Usuario",
-      pinAdminTitle: "Ingrese PIN de Administrador",
-      settingsBtn: "Ajustes", /* legacy */
+      settingsBtn: "Ajustes",
       ytLink: "Visite nuestro canal de YouTube",
       modelBase: "RECTIFICADOR ADAX TECNA MODELO: {model} — N° SERIE: ",
       gateTitle: "Ingrese PIN de Acceso",
@@ -425,6 +305,7 @@
         nivel_carga: { label: "NIVEL DE CARGA", fondo: "FONDO", flote: "FLOTE" },
         timer_nicd: { label: "TIMER NiCd", started: "INICIADO", off: "DESACTIVADO" }
       },
+      /* NEW: Localized register names for the raw table */
       regNames: {
         BATTERY_VOLTAGE_V: "Tensión batería (V)",
         LOAD_VOLTAGE_V: "Tensión consumo (V)",
@@ -454,10 +335,6 @@
     },
     en: {
       appTitle: "Modbus Mirror • Live Dashboard",
-      userSettingsBtn: "User Settings",
-      adminSettingsBtn: "Admin Settings",
-      pinUserTitle: "Enter User Settings PIN",
-      pinAdminTitle: "Enter Admin Settings PIN",
       settingsBtn: "Settings",
       ytLink: "Visit our YouTube channel",
       modelBase: "RECTIFIER ADAX TECNA MODEL: {model} — SERIAL NO: ",
@@ -512,6 +389,7 @@
         nivel_carga: { label: "CHARGE LEVEL", fondo: "BOOST", flote: "FLOAT" },
         timer_nicd: { label: "NiCd TIMER", started: "STARTED", off: "OFF" }
       },
+      /* NEW: Localized register names for the raw table */
       regNames: {
         BATTERY_VOLTAGE_V: "Battery voltage (V)",
         LOAD_VOLTAGE_V: "Load voltage (V)",
@@ -543,10 +421,8 @@
 
   /* ==================== CONFIG & HELPERS ==================== */
   const ACCESS_PIN = "1234";
-  const USER_SETTINGS_PIN = "1111";
-  const ADMIN_SETTINGS_PIN = "0000";
+  const SETTINGS_PIN = "0000";
   let LANG = localStorage.getItem("lang") || "es";
-  let CURRENT_SETTINGS_ROLE = null; // 'user' | 'admin'
 
   const names = [
     "BATTERY_VOLTAGE_V","LOAD_VOLTAGE_V","BATTERY_CURRENT_A","LOAD_CURRENT_A","TOTAL_CURRENT_A",
@@ -569,23 +445,27 @@
 
   /* ==================== LANGUAGE APPLY ==================== */
   function applyI18nStatic(){
+    // Header, buttons, links
     $("i.appTitle").textContent = t("appTitle");
-    $("i.userSettingsBtn").textContent = t("userSettingsBtn");
-    $("i.adminSettingsBtn").textContent = t("adminSettingsBtn");
+    $("i.settingsBtn").textContent = t("settingsBtn");
     $("ytLink").textContent = t("ytLink");
 
+    // Gate
     $("i.gateTitle").textContent = t("gateTitle");
     $("i.gateSub").textContent = t("gateSub");
     $("gateBtn").textContent = t("gateEnter");
     $("gateErr").textContent = "";
 
+    // Top cards
     $("i.measTitle").textContent = t("measTitle");
     $("i.alarmTitle").textContent = t("alarmTitle");
     $("i.stateTitle").textContent = t("stateTitle");
 
+    // Status pills
     $("m").textContent = t("statusMode") + ": --";
     $("t").textContent = t("statusLast") + ": --";
 
+    // Quick tiles labels
     $("i.tileVB").textContent = t("tileVB");
     $("i.tileVL").textContent = t("tileVL");
     $("i.tileIB").textContent = t("tileIB");
@@ -593,12 +473,15 @@
     $("i.tileIT").textContent = t("tileIT");
     $("i.tileTA").textContent = t("tileTA");
 
+    // Raw table
     $("i.rawTitle").textContent = t("rawTitle");
     $("i.rawIdx").textContent = t("rawIdx");
     $("i.rawName").textContent = t("rawName");
     $("i.rawRaw").textContent = t("rawRaw");
     $("i.rawScaled").textContent = t("rawScaled");
 
+    // Settings PIN + modal
+    $("i.pinTitle").textContent = t("pinTitle");
     $("i.cfgTitle").textContent = t("cfgTitle");
     $("i.cfgHint").textContent = t("cfgHint");
     $("i.upTitle").textContent = t("upTitle");
@@ -636,12 +519,6 @@
 
     $("btnReload").textContent = t("reload");
     $("btnSave").textContent = t("save");
-
-    // Set the dynamic PIN title according to current role, if modal is open
-    const pinTitle = CURRENT_SETTINGS_ROLE === 'admin' ? t("pinAdminTitle")
-                   : CURRENT_SETTINGS_ROLE === 'user'  ? t("pinUserTitle")
-                   : t("pinTitle");
-    $("i.pinTitle").textContent = pinTitle;
   }
 
   function applyModelLine(model, serialRaw){
@@ -675,7 +552,7 @@
     applyModelLine(model, ""); // serial set in tickTiles()
   }
 
-  /* ==================== CARDS & TABLE RENDERERS ==================== */
+  /* ==================== NEW TOP CARDS ==================== */
   function renderMeasurements(m){
     const L = I("measLabels"), U = I("units");
     const rows=[
@@ -709,7 +586,7 @@
       bat_sentido:  x => [ST.bat_sentido.label,   x===1 ? ST.bat_sentido.charge : ST.bat_sentido.discharge],
       modo_carga:   x => [ST.modo_carga.label,    x ? ST.modo_carga.manual : ST.modo_carga.auto],
       nivel_carga:  x => [ST.nivel_carga.label,   x ? ST.nivel_carga.fondo : ST.nivel_carga.flote],
-      timer_nicd:   x => [ST.timer_nicd.label,    x ? ST.timer_nicd.started : ST.nivel_carga.off],
+      timer_nicd:   x => [ST.timer_nicd.label,    x ? ST.timer_nicd.started : ST.timer_nicd.off],
     };
     $("statesList").innerHTML = items.map(it=>{
       const [label, value] = (map[it.key] ? map[it.key]( (it.valueRaw!==undefined?it.valueRaw : (it.value==="ENCENDIDO"||it.value==="ON"||it.value==="MANUAL"||it.value==="FONDO"||it.value==="STARTED")) ) : [it.label,it.value]);
@@ -780,6 +657,7 @@
     }catch(_){}
   }
 
+  /* ==================== TILES / TABLE ==================== */
   async function tickTiles(){
     try{
       const r=await fetch("/api/hr"); const js=await r.json();
@@ -802,7 +680,7 @@
       names.forEach((nm,i)=>{
         const tr=document.createElement("tr");
         const td=(x)=>{const d=document.createElement("td"); d.textContent=x; return d;}
-        const nmLabel = (I("regNames") && I("regNames")[nm]) || nm;
+        const nmLabel = (I("regNames") && I("regNames")[nm]) || nm;  // <-- localized name
         tr.appendChild(td(i));
         tr.appendChild(td(nmLabel));
         tr.appendChild(td(raw[i]??""));
@@ -812,40 +690,24 @@
     }catch(e){}
   }
 
-  /* ==================== SETTINGS MODAL & PIN (user/admin) ==================== */
-  const openConfigModal = (role)=>{ 
-    CURRENT_SETTINGS_ROLE = role;
-    updateSettingsVisibility();
-    $("backdrop").style.display="flex"; 
-  };
+  /* ==================== SETTINGS MODAL & PIN ==================== */
+  const openConfigModal = ()=>{ $("backdrop").style.display="flex"; };
   const closeConfigModal = ()=>{ $("backdrop").style.display="none"; };
 
-  function updateSettingsVisibility(){
-    // hide or show sections depending on role
-    const userMode = CURRENT_SETTINGS_ROLE === 'user';
-    $("secBranding").style.display = userMode ? "none" : "";
-    $("secIds").style.display = userMode ? "none" : "";
-  }
-
-  const openSettingsPin = (role)=>{
-    CURRENT_SETTINGS_ROLE = role;
-    $("i.pinTitle").textContent = role==='admin' ? t("pinAdminTitle") : t("pinUserTitle");
+  const openSettingsPin = ()=>{
     $("pinBackdrop").style.display="flex";
     $("settingsPin").value=""; $("pinErr").textContent="";
     setTimeout(()=>$("settingsPin").focus(), 10);
   };
   const closeSettingsPin = ()=>{ $("pinBackdrop").style.display="none"; };
 
-  $("btnUserSettings").onclick = ()=>{ openSettingsPin('user'); };
-  $("btnAdminSettings").onclick = ()=>{ openSettingsPin('admin'); };
-
+  $("btnSettings").onclick = ()=>{ openSettingsPin(); };
   $("pinBackdrop").addEventListener("click",(e)=>{ if(e.target===$("pinBackdrop")) closeSettingsPin(); });
   $("pinOk").onclick = ()=>{
-    const val = $("settingsPin").value.trim();
-    const ok = (CURRENT_SETTINGS_ROLE==='admin') ? (val===ADMIN_SETTINGS_PIN) : (val===USER_SETTINGS_PIN);
-    if (ok) { closeSettingsPin(); openConfigModal(CURRENT_SETTINGS_ROLE); }
-    else {
-      $("pinErr").textContent = t("gateErr");
+    if ($("settingsPin").value.trim() === SETTINGS_PIN) {
+      closeSettingsPin(); openConfigModal();
+    } else {
+      $("pinErr").textContent = (LANG==="es"?"PIN incorrecto. Inténtelo de nuevo.":"Incorrect PIN. Try again.");
       $("settingsPin").value = ""; $("settingsPin").focus();
     }
   };
@@ -868,33 +730,26 @@
     $("brand_qr").value=b.qr_url||""; $("device_model").value=d.model||"";
     $("u0").value=lu.unit0_id; $("u1").value=lu.unit1_id;
     $("hr_start").value=hr.start; $("hr_count").value=hr.count;
+    // Re-apply model line with current language base
     applyModelLine(d.model||"CEA", "");
   }
   $("btnReload").onclick = async ()=>{ await fillSettings(); toast(t("reloaded")); };
 
   $("btnSave").onclick = async ()=>{
     const btn=$("btnSave"); btn.disabled=true; const original=btn.textContent; btn.textContent = (LANG==="es"?"Guardando…":"Saving…");
-
-    // Build payload according to role
-    const basePayload = {
+    const payload = {
       upstream:{ port:$("ups_port").value, baudrate:+$("ups_baud").value, parity:$("ups_parity").value,
                  stopbits:+$("ups_stop").value, bytesize:+$("ups_byte").value, device_unit_id:+$("ups_uid").value,
                  poll_period_s:+$("ups_poll").value },
       mirror_rtu:{ port:$("mir_port").value, baudrate:+$("mir_baud").value, parity:$("mir_parity").value,
                    stopbits:+$("mir_stop").value, bytesize:+$("mir_byte").value },
-      tcp:{ port:+$("tcp_port").value }
-    };
-
-    const adminExtras = {
+      tcp:{ port:+$("tcp_port").value },
       local_units:{ unit0_id:+$("u0").value, unit1_id:+$("u1").value },
       hr:{ start:+$("hr_start").value, count:+$("hr_count").value },
       branding:{ phone:$("brand_phone").value, email:$("brand_email").value, youtube:$("brand_youtube").value,
                  logo_url:$("brand_logo").value, qr_url:$("brand_qr").value },
       device:{ model:$("device_model").value }
     };
-
-    const payload = (CURRENT_SETTINGS_ROLE==='admin') ? {...basePayload, ...adminExtras} : basePayload;
-
     try{
       const r=await fetch("/api/settings",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
       const js=await r.json();
@@ -916,9 +771,10 @@
     LANG = langSel.value || "es";
     localStorage.setItem("lang", LANG);
     applyI18nStatic();
-    await fillSettings();   // update top bar/model line text
-    await tickTiles();      // update raw table names
-    await refreshTopCards();
+    // Re-render dynamic parts immediately so labels swap without waiting
+    await fillSettings();   // updates model line base text to correct language
+    await tickTiles();      // updates raw table names
+    await refreshTopCards();// updates other dynamic labels
   });
 
   document.addEventListener("DOMContentLoaded", async ()=>{
