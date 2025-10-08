@@ -39,17 +39,13 @@ LAST_GOOD_POLL_MONO = None  # monotonic() timestamp of last successful upstream 
 SETTINGS_PATH = "settings.json"
 
 DEFAULT_SETTINGS = {
-    "upstream": {                 # master -> device on CH1
-        "port": "/dev/ttySC0",
-        "baudrate": 9600,
-        "parity": "N",
-        "stopbits": 1,
-        "bytesize": 8,
-        "device_unit_id": 1,
-        "poll_period_s": 1.0
+    "upstream": {                 # master -> device on CH1 (serial params are fixed in code)
+    "device_unit_id": 1,
+    "poll_period_s": 1.0
     },
+
     "mirror_rtu": {               # slave on CH2 (hot-reload supported)
-        "port": "/dev/ttySC1",
+        "slave_id": 2,
         "baudrate": 9600,
         "parity": "N",
         "stopbits": 1,
@@ -85,6 +81,22 @@ DEFAULT_SETTINGS = {
 # ---------- Settings helpers ----------
 SETTINGS_LOCK = asyncio.Lock()
 SETTINGS: Dict[str, Any] = {}
+
+
+# ==== Fixed upstream RTU (CH1) serial parameters ====
+# Change here in code if you ever need to, they are not user-editable.
+UP_CH1_PORT      = "/dev/ttySC0"   # e.g. "COM3" on Windows
+UP_CH1_BAUDRATE  = 9600
+UP_CH1_PARITY    = "N"             # "N","E","O"
+UP_CH1_STOPBITS  = 1               # 1 or 2
+UP_CH1_BYTESIZE  = 8               # 7 or 8
+# ====================================================
+
+
+# ==== Fixed Mirror RTU (CH2) serial port (not user-editable) ====
+MIRROR_CH2_PORT = "/dev/ttySC1"   # e.g. "COM4" on Windows if you ever change platform
+# ================================================================
+
 
 
 async def snapshot_regs() -> list[int]:
@@ -263,8 +275,9 @@ def _copy_hr_values(src: List[int], dst: ModbusSequentialDataBlock, start_addr: 
     # safe setValues wrapper for a list
     dst.setValues(start_addr, src)
 
+"""
 async def rebuild_datastores_and_context():
-    """Rebuilds stores/context if Unit IDs or HR sizing changed; preserves values where possible."""
+
     global store0, store1, context
     hr_start = S()["hr"]["start"]
     hr_count = S()["hr"]["count"]
@@ -295,6 +308,48 @@ async def rebuild_datastores_and_context():
         store0 = new0
         store1 = new1
         context = ModbusServerContext(slaves={u0: store0, u1: store1}, single=False)
+"""
+
+async def rebuild_datastores_and_context():
+    """Rebuilds stores/context if Unit IDs or HR sizing changed; preserves values where possible."""
+    global store0, store1, context
+    hr_start = S()["hr"]["start"]
+    hr_count = S()["hr"]["count"]
+    u0 = S()["local_units"]["unit0_id"]
+    u1 = S()["local_units"]["unit1_id"]
+    mirror_id = (S().get("mirror_rtu", {}) or {}).get("slave_id", u1)
+
+    # snapshot old data (if exists)
+    old0 = []
+    old1 = []
+    if store0 and store1:
+        with contextlib.suppress(Exception):
+            old0 = _hr_block0().getValues(0, hr_count)
+        with contextlib.suppress(Exception):
+            old1 = _hr_block1().getValues(1, hr_count)
+
+    # build new stores
+    new0 = make_store0(hr_count)
+    new1 = make_store1(hr_count)
+
+    # copy overlapping data
+    if old0:
+        _copy_hr_values(old0[:hr_count], new0.store["h"], 0)
+    if old1:
+        _copy_hr_values(old1[:hr_count], new1.store["h"], 1)
+
+    # swap under lock and rebuild slave map
+    async with HR_LOCK:
+        store0 = new0
+        store1 = new1
+        slaves: Dict[int, ModbusSlaveContext] = {}
+        slaves[u0] = store0
+        slaves[u1] = store1
+        if mirror_id not in slaves:
+            slaves[mirror_id] = store1  # CH2 mirror answers on this ID (same 1-based view)
+        context = ModbusServerContext(slaves=slaves, single=False)
+
+
 
 async def _write_both_views(regs: List[int]):
     async with HR_LOCK:
@@ -358,25 +413,29 @@ async def poll_upstream_and_update_cache():
     async def connect():
         nonlocal client, cur
         ups = S()["upstream"]
-        cur = ups.copy()
+        # keep a snapshot of only the editable fields
+        cur = {"device_unit_id": ups.get("device_unit_id", 1),
+               "poll_period_s":  ups.get("poll_period_s", 1.0)}
         client = AsyncModbusSerialClient(
-            port=ups["port"],
+            port=UP_CH1_PORT,
             framer=FramerType.RTU,
-            baudrate=ups["baudrate"],
-            parity=ups["parity"],
-            stopbits=ups["stopbits"],
-            bytesize=ups["bytesize"],
+            baudrate=UP_CH1_BAUDRATE,
+            parity=UP_CH1_PARITY,
+            stopbits=UP_CH1_STOPBITS,
+            bytesize=UP_CH1_BYTESIZE,
             timeout=2
         )
         ok = await client.connect()
         if not ok:
             await _safe_close(client)
             client = None
-            raise RuntimeError(f"Failed to open upstream port {ups['port']}")
+            raise RuntimeError(f"Failed to open upstream port {UP_CH1_PORT}")
+
 
     def rtu_settings_changed() -> bool:
-        ups = S()["upstream"]
-        return any(ups[k] != cur.get(k) for k in ["port","baudrate","parity","stopbits","bytesize"])
+        # Serial params are fixed in code, so they never change via settings.
+        return False
+
 
     await connect()
 
@@ -465,9 +524,8 @@ async def tcp_server_manager():
             with contextlib.suppress(asyncio.CancelledError):
                 await server_task
 
-
+"""
 async def mirror_rtu_server_manager():
-    """Hot-reloadable Modbus RTU mirror on CH2 (polls settings & restarts when needed)."""
     current = {}
     server_task: asyncio.Task | None = None
 
@@ -507,7 +565,55 @@ async def mirror_rtu_server_manager():
             server_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await server_task
+"""
 
+async def mirror_rtu_server_manager():
+    """Hot-reloadable Modbus RTU mirror on CH2 (polls settings & restarts when needed)."""
+    current = {}
+    server_task: asyncio.Task | None = None
+
+    async def _start(cfg: dict) -> asyncio.Task:
+        async def run():
+            await StartAsyncSerialServer(
+                context=context,
+                framer=FramerType.RTU,
+                port=MIRROR_CH2_PORT,             # <— fixed, no longer from settings
+                baudrate=cfg["baudrate"],
+                parity=cfg["parity"],
+                stopbits=cfg["stopbits"],
+                bytesize=cfg["bytesize"],
+                timeout=1
+            )
+        return asyncio.create_task(run(), name=f"mbserial:{MIRROR_CH2_PORT}")
+
+    try:
+        while True:
+            cfg = S().get("mirror_rtu", {}) or {}
+            watched = {
+                "baudrate": cfg.get("baudrate"),
+                "parity":   cfg.get("parity"),
+                "stopbits": cfg.get("stopbits"),
+                "bytesize": cfg.get("bytesize"),
+            }
+            needs_restart = (watched != current) or (server_task is None) or server_task.done()
+
+            if needs_restart:
+                if server_task and not server_task.done():
+                    server_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await server_task
+
+                current = watched
+                server_task = await _start(cfg)
+                print(f"[RTU mirror] {MIRROR_CH2_PORT} {cfg.get('baudrate')} {cfg.get('parity')} "
+                      f"{cfg.get('stopbits')} {cfg.get('bytesize')} | slave_id={cfg.get('slave_id')}")
+
+            await asyncio.sleep(0.5)  # poll settings
+    finally:
+        if server_task and not server_task.done():
+            server_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await server_task
 
 
 
@@ -670,21 +776,64 @@ async def api_debug_store():
 @app.get("/api/settings")
 async def get_settings():
     async with SETTINGS_LOCK:
-        return JSONResponse(S())
+        s = json.loads(json.dumps(S()))  # shallow copy-safe
+    # Show only allowed upstream fields
+    up = s.get("upstream", {}) or {}
+    s["upstream"] = {
+        "device_unit_id": up.get("device_unit_id", 1),
+        "poll_period_s":  up.get("poll_period_s", 1.0),
+    }
+
+    # Mirror (CH2): expose slave_id + serial params (no port)
+    mr = s.get("mirror_rtu", {}) or {}
+    s["mirror_rtu"] = {
+        "slave_id": mr.get("slave_id", (s.get("local_units", {}) or {}).get("unit1_id", 2)),
+        "baudrate": mr.get("baudrate", 9600),
+        "parity":   mr.get("parity", "N"),
+        "stopbits": mr.get("stopbits", 1),
+        "bytesize": mr.get("bytesize", 8),
+    }
+
+    return JSONResponse(s)
 
 
+"""
 @app.put("/api/settings")
 async def put_settings(payload: Dict[str, Any] = Body(...)):
-    # Merge & save
+    # sanitize upstream - allow only device_unit_id and poll_period_s
+    up = ((payload or {}).get("upstream") or {})
+    if isinstance(up, dict):
+        allowed_up = {
+            "device_unit_id": up.get("device_unit_id"),
+            "poll_period_s":  up.get("poll_period_s"),
+        }
+        # remove disallowed keys by replacing the subtree
+        payload.setdefault("upstream", {})
+        payload["upstream"].clear()
+        # only set keys that are not None
+        if allowed_up["device_unit_id"] is not None:
+            payload["upstream"]["device_unit_id"] = allowed_up["device_unit_id"]
+        if allowed_up["poll_period_s"] is not None:
+            payload["upstream"]["poll_period_s"] = allowed_up["poll_period_s"]
+
+    # Merge and save
     async with SETTINGS_LOCK:
         current_on_disk = load_settings_from_disk()
+
         def deep_merge(dst, src):
             for k, v in src.items():
                 if isinstance(v, dict) and isinstance(dst.get(k), dict):
                     deep_merge(dst[k], v)
                 else:
                     dst[k] = v
+
         deep_merge(current_on_disk, payload)
+
+        # extra safety - purge any legacy upstream serial fields before writing
+        legacy = ["port","baudrate","parity","stopbits","bytesize"]
+        if "upstream" in current_on_disk and isinstance(current_on_disk["upstream"], dict):
+            for k in legacy:
+                current_on_disk["upstream"].pop(k, None)
 
         try:
             await save_settings_to_disk(current_on_disk)
@@ -695,16 +844,82 @@ async def put_settings(payload: Dict[str, Any] = Body(...)):
         SETTINGS.clear()
         SETTINGS.update(current_on_disk)
 
-    # If HR window or local unit IDs changed → rebuild stores/context immediately.
     need_rebuild = (
         prev.get("hr", {}) != S().get("hr", {}) or
         prev.get("local_units", {}) != S().get("local_units", {})
     )
     if need_rebuild:
         await rebuild_datastores_and_context()
-        # Managers poll S() and will pick up the new context map automatically.
 
-    # No event.set() calls needed — managers poll every 0.5s and restart on change.
+    return JSONResponse({"ok": True})
+"""
+
+@app.put("/api/settings")
+async def put_settings(payload: Dict[str, Any] = Body(...)):
+    payload = payload or {}
+
+    # ---- sanitize upstream (CH1): allow only device_unit_id & poll_period_s
+    if isinstance(payload.get("upstream"), dict):
+        up_in = payload["upstream"]
+        payload["upstream"] = {}
+        if "device_unit_id" in up_in:
+            payload["upstream"]["device_unit_id"] = int(up_in["device_unit_id"])
+        if "poll_period_s" in up_in:
+            payload["upstream"]["poll_period_s"] = float(up_in["poll_period_s"])
+
+    # ---- sanitize mirror_rtu (CH2): allow slave_id + serial params; drop port
+    if isinstance(payload.get("mirror_rtu"), dict):
+        mr_in = payload["mirror_rtu"]
+        mr_out: Dict[str, Any] = {}
+        if "slave_id" in mr_in:
+            mr_out["slave_id"] = int(mr_in["slave_id"])
+        for k in ("baudrate", "stopbits", "bytesize"):
+            if k in mr_in: mr_out[k] = int(mr_in[k])
+        if "parity" in mr_in: mr_out["parity"] = str(mr_in["parity"])
+        payload["mirror_rtu"] = mr_out  # (no 'port')
+
+    async with SETTINGS_LOCK:
+        current_on_disk = load_settings_from_disk()
+
+        def deep_merge(dst, src):
+            for k, v in (src or {}).items():
+                if isinstance(v, dict) and isinstance(dst.get(k), dict):
+                    deep_merge(dst[k], v)
+                else:
+                    dst[k] = v
+
+        # snapshot before merge to know if we must rebuild
+        prev = json.loads(json.dumps(current_on_disk))
+
+        deep_merge(current_on_disk, payload)
+
+        # purge any legacy keys we no longer support
+        if isinstance(current_on_disk.get("upstream"), dict):
+            for k in ("port", "baudrate", "parity", "stopbits", "bytesize"):  # upstream serial is fixed in code
+                current_on_disk["upstream"].pop(k, None)
+        if isinstance(current_on_disk.get("mirror_rtu"), dict):
+            current_on_disk["mirror_rtu"].pop("port", None)  # fixed in code
+
+        try:
+            await save_settings_to_disk(current_on_disk)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to save settings: {e}")
+
+        # publish the new in-memory settings
+        SETTINGS.clear()
+        SETTINGS.update(current_on_disk)
+
+    # decide whether to rebuild slave mapping (context)
+    prev_mirror_slave = (prev.get("mirror_rtu", {}) or {}).get("slave_id")
+    new_mirror_slave  = (S().get("mirror_rtu", {}) or {}).get("slave_id")
+    need_rebuild = (
+        (prev.get("hr", {}) or {}) != (S().get("hr", {}) or {}) or
+        (prev.get("local_units", {}) or {}) != (S().get("local_units", {}) or {}) or
+        prev_mirror_slave != new_mirror_slave
+    )
+    if need_rebuild:
+        await rebuild_datastores_and_context()
+
     return JSONResponse({"ok": True})
 
 

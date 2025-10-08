@@ -299,29 +299,35 @@
     <div class="content">
       <p id="i.cfgHint" class="hint">Todos los ajustes se recargan en caliente. TCP y RTU espejo reinician automáticamente.</p>
 
-      <h3 id="i.upTitle">RTU de Origen (CH1)</h3>
-      <div class="grid">
-        <div><label id="i.upPort">Puerto</label><input id="ups_port" placeholder="/dev/ttySC0"></div>
-        <div><label id="i.upBaud">Baudios</label><input id="ups_baud" type="number" placeholder="9600"></div>
-        <div><label id="i.upParity">Paridad</label>
-          <select id="ups_parity"><option>N</option><option>E</option><option>O</option></select>
-        </div>
-        <div><label id="i.upStop">Bits de parada</label><input id="ups_stop" type="number" placeholder="1" min="1" max="2"></div>
-        <div><label id="i.upByte">Tamaño de byte</label><input id="ups_byte" type="number" placeholder="8" min="5" max="8"></div>
-        <div><label id="i.upUnit">ID de Dispositivo</label><input id="ups_uid" type="number" placeholder="1" min="1" max="247"></div>
-        <div><label id="i.upPoll">Periodo de sondeo (s)</label><input id="ups_poll" type="number" step="0.1" placeholder="1.0" min="0.1"></div>
-      </div>
+      <section id="secUpstream">
+  <h3 id="i.upTitle">RTU de Origen (CH1)</h3>
+  <div class="grid">
+    <div>
+      <label id="i.upUnit">ID de Dispositivo</label>
+      <input id="ups_uid" type="number" placeholder="1" min="1" max="247">
+    </div>
+    <div>
+      <label id="i.upPoll">Periodo de sondeo (s)</label>
+      <input id="ups_poll" type="number" step="0.1" placeholder="1.0" min="0.1">
+    </div>
+  </div>
+</section>
+
 
       <h3 id="i.mirTitle" style="margin-top:16px">RTU Espejo (CH2)</h3>
-      <div class="grid">
-        <div><label id="i.mirPort">Puerto</label><input id="mir_port" placeholder="/dev/ttySC1"></div>
-        <div><label id="i.mirBaud">Baudios</label><input id="mir_baud" type="number" placeholder="9600"></div>
-        <div><label id="i.mirParity">Paridad</label>
-          <select id="mir_parity"><option>N</option><option>E</option><option>O</option></select>
-        </div>
-        <div><label id="i.mirStop">Bits de parada</label><input id="mir_stop" type="number" placeholder="1" min="1" max="2"></div>
-        <div><label id="i.mirByte">Tamaño de byte</label><input id="mir_byte" type="number" placeholder="8" min="5" max="8"></div>
-      </div>
+<div class="grid">
+  <div>
+    <label id="i.mirSlave">ID de Esclavo</label>
+    <input id="mir_slave" type="number" min="1" max="247" placeholder="2">
+  </div>
+  <div><label id="i.mirBaud">Baudios</label><input id="mir_baud" type="number" placeholder="9600"></div>
+  <div><label id="i.mirParity">Paridad</label>
+    <select id="mir_parity"><option>N</option><option>E</option><option>O</option></select>
+  </div>
+  <div><label id="i.mirStop">Bits de parada</label><input id="mir_stop" type="number" placeholder="1" min="1" max="2"></div>
+  <div><label id="i.mirByte">Tamaño de byte</label><input id="mir_byte" type="number" placeholder="8" min="5" max="8"></div>
+</div>
+
 
       <h3 id="i.tcpTitle" style="margin-top:16px">Esclavo TCP</h3>
       <div class="grid">
@@ -398,7 +404,7 @@
       upPort: "Puerto", upBaud: "Baudios", upParity: "Paridad", upStop: "Bits de parada",
       upByte: "Tamaño de byte", upUnit: "ID de Dispositivo", upPoll: "Periodo de sondeo (s)",
       mirTitle: "RTU Espejo (CH2)",
-      mirPort: "Puerto", mirBaud: "Baudios", mirParity: "Paridad", mirStop: "Bits de parada", mirByte: "Tamaño de byte",
+      mirSlave: "ID de Esclavo", mirBaud: "Baudios", mirParity: "Paridad", mirStop: "Bits de parada", mirByte: "Tamaño de byte",
       tcpTitle: "Esclavo TCP", tcpPort: "Puerto TCP",
       brandTitle: "Marca y Dispositivo",
       lblPhone: "Teléfono", lblEmail: "Email", lblYT: "URL de YouTube", lblLogo: "URL del Logo", lblQR: "URL de QR (opcional)", lblModel: "Modelo (p.ej. CEA-24/20)",
@@ -485,7 +491,7 @@
       upPort: "Port", upBaud: "Baudrate", upParity: "Parity", upStop: "Stop Bits",
       upByte: "Byte Size", upUnit: "Device Unit ID", upPoll: "Poll Period (s)",
       mirTitle: "Mirror RTU (CH2)",
-      mirPort: "Port", mirBaud: "Baudrate", mirParity: "Parity", mirStop: "Stop Bits", mirByte: "Byte Size",
+      mirSlave: "Slave ID", mirBaud: "Baudrate", mirParity: "Parity", mirStop: "Stop Bits", mirByte: "Byte Size",
       tcpTitle: "TCP Slave", tcpPort: "TCP Port",
       brandTitle: "Branding & Device",
       lblPhone: "Phone", lblEmail: "Email", lblYT: "YouTube URL", lblLogo: "Logo URL", lblQR: "QR Image URL (optional)", lblModel: "Model (e.g., CEA-24/20)",
@@ -602,16 +608,11 @@
     $("i.cfgTitle").textContent = t("cfgTitle");
     $("i.cfgHint").textContent = t("cfgHint");
     $("i.upTitle").textContent = t("upTitle");
-    $("i.upPort").textContent = t("upPort");
-    $("i.upBaud").textContent = t("upBaud");
-    $("i.upParity").textContent = t("upParity");
-    $("i.upStop").textContent = t("upStop");
-    $("i.upByte").textContent = t("upByte");
     $("i.upUnit").textContent = t("upUnit");
     $("i.upPoll").textContent = t("upPoll");
 
     $("i.mirTitle").textContent = t("mirTitle");
-    $("i.mirPort").textContent = t("mirPort");
+    $("i.mirSlave").textContent = t("mirSlave");
     $("i.mirBaud").textContent = t("mirBaud");
     $("i.mirParity").textContent = t("mirParity");
     $("i.mirStop").textContent = t("mirStop");
@@ -821,11 +822,13 @@
   const closeConfigModal = ()=>{ $("backdrop").style.display="none"; };
 
   function updateSettingsVisibility(){
-    // hide or show sections depending on role
-    const userMode = CURRENT_SETTINGS_ROLE === 'user';
-    $("secBranding").style.display = userMode ? "none" : "";
-    $("secIds").style.display = userMode ? "none" : "";
-  }
+  const userMode = CURRENT_SETTINGS_ROLE === 'user';
+  // user: hide branding, ids/hr, and upstream (CH1) entirely
+  $("secBranding").style.display = userMode ? "none" : "";
+  $("secIds").style.display = userMode ? "none" : "";
+  $("secUpstream").style.display = userMode ? "none" : "";
+}
+
 
   const openSettingsPin = (role)=>{
     CURRENT_SETTINGS_ROLE = role;
@@ -856,11 +859,17 @@
   async function fillSettings(){
     const r = await fetch("/api/settings"); const js = await r.json();
     renderTopbarFromSettings(js);
-    const u=js.upstream, m=js.mirror_rtu, tcfg=js.tcp, lu=js.local_units, hr=js.hr, b=js.branding||{}, d=js.device||{};
-    $("ups_port").value=u.port; $("ups_baud").value=u.baudrate; $("ups_parity").value=u.parity;
-    $("ups_stop").value=u.stopbits; $("ups_byte").value=u.bytesize; $("ups_uid").value=u.device_unit_id;
-    $("ups_poll").value=u.poll_period_s;
-    $("mir_port").value=m.port; $("mir_baud").value=m.baudrate; $("mir_parity").value=m.parity;
+    const u = js.upstream || {};
+    const m = js.mirror_rtu || {};
+    const tcfg = js.tcp || {};
+    const lu = js.local_units || {};
+    const hr = js.hr || {};
+    const b = js.branding || {};
+    const d = js.device || {};
+
+    $("ups_uid").value  = (u.device_unit_id ?? 1);
+    $("ups_poll").value = (u.poll_period_s ?? 1.0);
+    $("mir_slave").value=(m.slave_id ?? (lu.unit1_id ?? 2)); $("mir_baud").value=m.baudrate; $("mir_parity").value=m.parity;
     $("mir_stop").value=m.stopbits; $("mir_byte").value=m.bytesize;
     $("tcp_port").value=tcfg.port;
     $("brand_phone").value=b.phone||""; $("brand_email").value=b.email||"";
@@ -875,15 +884,21 @@
   $("btnSave").onclick = async ()=>{
     const btn=$("btnSave"); btn.disabled=true; const original=btn.textContent; btn.textContent = (LANG==="es"?"Guardando…":"Saving…");
 
-    // Build payload according to role
     const basePayload = {
-      upstream:{ port:$("ups_port").value, baudrate:+$("ups_baud").value, parity:$("ups_parity").value,
-                 stopbits:+$("ups_stop").value, bytesize:+$("ups_byte").value, device_unit_id:+$("ups_uid").value,
-                 poll_period_s:+$("ups_poll").value },
-      mirror_rtu:{ port:$("mir_port").value, baudrate:+$("mir_baud").value, parity:$("mir_parity").value,
-                   stopbits:+$("mir_stop").value, bytesize:+$("mir_byte").value },
-      tcp:{ port:+$("tcp_port").value }
-    };
+  upstream: {
+    device_unit_id: +$("ups_uid").value,
+    poll_period_s:  +$("ups_poll").value
+  },
+  mirror_rtu: {
+    slave_id: +$("mir_slave").value,
+    baudrate: +$("mir_baud").value,
+    parity: $("mir_parity").value,
+    stopbits: +$("mir_stop").value,
+    bytesize: +$("mir_byte").value
+  },
+  tcp: { port: +$("tcp_port").value }
+};
+
 
     const adminExtras = {
       local_units:{ unit0_id:+$("u0").value, unit1_id:+$("u1").value },
