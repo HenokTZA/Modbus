@@ -574,78 +574,75 @@
   };
   const I = (k)=> I18N[LANG][k];
 
-  /* ==================== LANGUAGE APPLY ==================== */
-  function applyI18nStatic(){
-    $("i.appTitle").textContent = t("appTitle");
-    $("i.userSettingsBtn").textContent = t("userSettingsBtn");
-    $("i.adminSettingsBtn").textContent = t("adminSettingsBtn");
-    $("ytLink").textContent = t("ytLink");
+  
+function applyI18nStatic(){
+  const set = (id, key)=>{ const el=$(id); if(el) el.textContent = t(key); };
 
-    $("i.gateTitle").textContent = t("gateTitle");
-    $("i.gateSub").textContent = t("gateSub");
-    $("gateBtn").textContent = t("gateEnter");
-    $("gateErr").textContent = "";
+  set("i.appTitle","appTitle");
+  set("i.userSettingsBtn","userSettingsBtn");
+  set("i.adminSettingsBtn","adminSettingsBtn");
+  const ytEl = $("ytLink"); if(ytEl) ytEl.textContent = t("ytLink");
 
-    $("i.measTitle").textContent = t("measTitle");
-    $("i.alarmTitle").textContent = t("alarmTitle");
-    $("i.stateTitle").textContent = t("stateTitle");
+  set("i.gateTitle","gateTitle");
+  set("i.gateSub","gateSub");
+  const gateBtn = $("gateBtn"); if(gateBtn) gateBtn.textContent = t("gateEnter");
+  const gateErr = $("gateErr"); if(gateErr) gateErr.textContent = "";
 
-    $("m").textContent = t("statusMode") + ": --";
-    $("t").textContent = t("statusLast") + ": --";
+  set("i.measTitle","measTitle");
+  set("i.alarmTitle","alarmTitle");
+  set("i.stateTitle","stateTitle");
 
-    $("i.tileVB").textContent = t("tileVB");
-    $("i.tileVL").textContent = t("tileVL");
-    $("i.tileIB").textContent = t("tileIB");
-    $("i.tileIL").textContent = t("tileIL");
-    $("i.tileIT").textContent = t("tileIT");
-    $("i.tileTA").textContent = t("tileTA");
+  const mEl=$("m"); if(mEl) mEl.textContent = t("statusMode")+": --";
+  const tEl=$("t"); if(tEl) tEl.textContent = t("statusLast")+": --";
 
-    $("i.rawTitle").textContent = t("rawTitle");
-    $("i.rawIdx").textContent = t("rawIdx");
-    $("i.rawName").textContent = t("rawName");
-    $("i.rawRaw").textContent = t("rawRaw");
-    $("i.rawScaled").textContent = t("rawScaled");
+  set("i.tileVB","tileVB");
+  set("i.tileVL","tileVL");
+  set("i.tileIB","tileIB");
+  set("i.tileIL","tileIL");
+  set("i.tileIT","tileIT");
+  set("i.tileTA","tileTA");
 
-    $("i.cfgTitle").textContent = t("cfgTitle");
-    $("i.cfgHint").textContent = t("cfgHint");
-    $("i.upTitle").textContent = t("upTitle");
-    $("i.upUnit").textContent = t("upUnit");
-    $("i.upPoll").textContent = t("upPoll");
+  set("i.rawTitle","rawTitle");
+  set("i.rawIdx","rawIdx");
+  set("i.rawName","rawName");
+  set("i.rawRaw","rawRaw");
+  set("i.rawScaled","rawScaled");
 
-    $("i.mirTitle").textContent = t("mirTitle");
-    $("i.mirSlave").textContent = t("mirSlave");
-    $("i.mirBaud").textContent = t("mirBaud");
-    $("i.mirParity").textContent = t("mirParity");
-    $("i.mirStop").textContent = t("mirStop");
-    $("i.mirByte").textContent = t("mirByte");
+  set("i.cfgTitle","cfgTitle");
+  set("i.cfgHint","cfgHint");
+  set("i.upTitle","upTitle");
+  set("i.upUnit","upUnit");
+  set("i.upPoll","upPoll");
 
-    $("i.tcpTitle").textContent = t("tcpTitle");
-    $("i.tcpPort").textContent = t("tcpPort");
-    $("i.tcpUnit1").textContent = t("tcpUnit1");
+  set("i.mirTitle","mirTitle");
+  set("i.mirSlave","mirSlave");
+  set("i.mirBaud","mirBaud");
+  set("i.mirParity","mirParity");
+  set("i.mirStop","mirStop");
+  set("i.mirByte","mirByte");
 
-    $("i.brandTitle").textContent = t("brandTitle");
-    $("i.lblPhone").textContent = t("lblPhone");
-    $("i.lblEmail").textContent = t("lblEmail");
-    $("i.lblYT").textContent = t("lblYT");
-    $("i.lblLogo").textContent = t("lblLogo");
-    $("i.lblQR").textContent = t("lblQR");
-    $("i.lblModel").textContent = t("lblModel");
+  set("i.tcpTitle","tcpTitle");
+  set("i.tcpPort","tcpPort");
+  set("i.tcpUnit1","tcpUnit1"); // NEW label is kept
 
-    $("i.idsTitle").textContent = t("idsTitle");
-    $("i.u0").textContent = t("u0");
-    $("i.u1").textContent = t("u1");
-    $("i.hrStart").textContent = t("hrStart");
-    $("i.hrCount").textContent = t("hrCount");
+  set("i.brandTitle","brandTitle");
+  set("i.lblPhone","lblPhone");
+  set("i.lblEmail","lblEmail");
+  set("i.lblYT","lblYT");
+  set("i.lblLogo","lblLogo");
+  set("i.lblQR","lblQR");
+  set("i.lblModel","lblModel");
 
-    $("btnReload").textContent = t("reload");
-    $("btnSave").textContent = t("save");
+  // NOTE: we intentionally removed: i.idsTitle, i.u0, i.u1, i.hrStart, i.hrCount
 
-    // Set the dynamic PIN title according to current role, if modal is open
-    const pinTitle = CURRENT_SETTINGS_ROLE === 'admin' ? t("pinAdminTitle")
-                   : CURRENT_SETTINGS_ROLE === 'user'  ? t("pinUserTitle")
+  const pinTitle = CURRENT_SETTINGS_ROLE==='admin' ? t("pinAdminTitle")
+                   : CURRENT_SETTINGS_ROLE==='user' ? t("pinUserTitle")
                    : t("pinTitle");
-    $("i.pinTitle").textContent = pinTitle;
-  }
+  set("i.pinTitle", null); // ensure element exists
+  const pinEl = $("i.pinTitle"); if(pinEl) pinEl.textContent = pinTitle;
+}
+
+ 
 
   function applyModelLine(model, serialRaw){
     const base = t("modelBase", {model: model || "CEA"});
@@ -825,11 +822,13 @@
 
   function updateSettingsVisibility(){
   const userMode = CURRENT_SETTINGS_ROLE === 'user';
-  // user: hide branding, ids/hr, and upstream (CH1) entirely
-  $("secBranding").style.display = userMode ? "none" : "";
-  $("secIds").style.display = userMode ? "none" : "";
-  $("secUpstream").style.display = userMode ? "none" : "";
+  const branding = $("secBranding");
+  const upstream = $("secUpstream");
+  if (branding) branding.style.display = userMode ? "none" : "";
+  if (upstream) upstream.style.display = userMode ? "none" : "";
+  // secIds is gone; do not reference it
 }
+
 
 
   const openSettingsPin = (role)=>{
@@ -859,29 +858,40 @@
   $("backdrop").addEventListener("click",(e)=>{ if(e.target===$("backdrop")) closeConfigModal(); });
 
   async function fillSettings(){
-    const r = await fetch("/api/settings"); const js = await r.json();
-    renderTopbarFromSettings(js);
-    const u = js.upstream || {};
-    const m = js.mirror_rtu || {};
-    const tcfg = js.tcp || {};
-    const lu = js.local_units || {};
-    $("tcp_unit1").value = (lu.unit1_id ?? 2);
-    const hr = js.hr || {};
-    const b = js.branding || {};
-    const d = js.device || {};
+  const r = await fetch("/api/settings");
+  const js = await r.json();
+  renderTopbarFromSettings(js);
 
-    $("ups_uid").value  = (u.device_unit_id ?? 1);
-    $("ups_poll").value = (u.poll_period_s ?? 1.0);
-    $("mir_slave").value=(m.slave_id ?? (lu.unit1_id ?? 2)); $("mir_baud").value=m.baudrate; $("mir_parity").value=m.parity;
-    $("mir_stop").value=m.stopbits; $("mir_byte").value=m.bytesize;
-    $("tcp_port").value=tcfg.port;
-    $("brand_phone").value=b.phone||""; $("brand_email").value=b.email||"";
-    $("brand_youtube").value=b.youtube||""; $("brand_logo").value=b.logo_url||"";
-    $("brand_qr").value=b.qr_url||""; $("device_model").value=d.model||"";
-    $("u0").value=lu.unit0_id; $("u1").value=lu.unit1_id;
-    $("hr_start").value=hr.start; $("hr_count").value=hr.count;
-    applyModelLine(d.model||"CEA", "");
-  }
+  const u   = js.upstream   || {};
+  const m   = js.mirror_rtu || {};
+  const tcf = js.tcp        || {};
+  const lu  = js.local_units|| {};
+  const b   = js.branding   || {};
+  const d   = js.device     || {};
+
+  $("ups_uid").value  = (u.device_unit_id ?? 1);
+  $("ups_poll").value = (u.poll_period_s ?? 1.0);
+
+  $("mir_slave").value = (m.slave_id ?? (lu.unit1_id ?? 2));
+  $("mir_baud").value  = m.baudrate ?? "";
+  $("mir_parity").value= m.parity   ?? "N";
+  $("mir_stop").value  = m.stopbits ?? 1;
+  $("mir_byte").value  = m.bytesize ?? 8;
+
+  $("tcp_port").value  = tcf.port ?? 1502;
+  $("tcp_unit1").value = (lu.unit1_id ?? 2); // moved under TCP section
+
+  $("brand_phone").value = b.phone   || "";
+  $("brand_email").value = b.email   || "";
+  $("brand_youtube").value = b.youtube || "";
+  $("brand_logo").value = b.logo_url || "";
+  $("brand_qr").value   = b.qr_url   || "";
+  $("device_model").value = d.model  || "";
+
+  applyModelLine(d.model||"CEA", "");
+}
+  
+ 
   $("btnReload").onclick = async ()=>{ await fillSettings(); toast(t("reloaded")); };
 
   $("btnSave").onclick = async ()=>{
