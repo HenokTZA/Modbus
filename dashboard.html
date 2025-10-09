@@ -330,9 +330,17 @@
 
 
       <h3 id="i.tcpTitle" style="margin-top:16px">Esclavo TCP</h3>
-      <div class="grid">
-        <div><label id="i.tcpPort">Puerto TCP</label><input id="tcp_port" type="number" placeholder="1502" min="1" max="65535"></div>
-      </div>
+<div class="grid">
+  <div>
+    <label id="i.tcpPort">Puerto TCP</label>
+    <input id="tcp_port" type="number" placeholder="1502" min="1" max="65535">
+  </div>
+  <div>
+    <label id="i.tcpUnit1">ID de Unidad (Modbus Poll, base 1)</label>
+    <input id="tcp_unit1" type="number" min="1" max="247" placeholder="2">
+  </div>
+</div>
+
 
       <!-- BRANDING & DEVICE (hidden for user role) -->
       <section id="secBranding" style="margin-top:16px">
@@ -347,16 +355,7 @@
         </div>
       </section>
 
-      <!-- IDS & HR (hidden for user role) -->
-      <section id="secIds" style="margin-top:16px">
-        <h3 id="i.idsTitle">IDs Locales y Rango HR</h3>
-        <div class="grid">
-          <div><label id="i.u0">Unidad 0 (panel, base 0)</label><input id="u0" type="number" min="1" max="247"></div>
-          <div><label id="i.u1">Unidad 1 (Modbus Poll, base 1)</label><input id="u1" type="number" min="1" max="247"></div>
-          <div><label id="i.hrStart">Inicio HR</label><input id="hr_start" type="number" min="0"></div>
-          <div><label id="i.hrCount">Cantidad HR</label><input id="hr_count" type="number" min="1"></div>
-        </div>
-      </section>
+      
 
       <div class="actions">
         <button class="btn" id="btnReload">Recargar</button>
@@ -372,6 +371,7 @@
   /* ==================== I18N STRINGS ==================== */
   const I18N = {
     es: {
+      tcpUnit1: "ID de Unidad (Modbus Poll, base 1)",
       appTitle: "Modbus Mirror • Panel en Vivo",
       userSettingsBtn: "Ajustes de Usuario",
       adminSettingsBtn: "Ajustes de Admin",
@@ -459,6 +459,7 @@
       }
     },
     en: {
+      tcpUnit1: "Unit ID (Modbus Poll, 1-based)",
       appTitle: "Modbus Mirror • Live Dashboard",
       userSettingsBtn: "User Settings",
       adminSettingsBtn: "Admin Settings",
@@ -620,6 +621,7 @@
 
     $("i.tcpTitle").textContent = t("tcpTitle");
     $("i.tcpPort").textContent = t("tcpPort");
+    $("i.tcpUnit1").textContent = t("tcpUnit1");
 
     $("i.brandTitle").textContent = t("brandTitle");
     $("i.lblPhone").textContent = t("lblPhone");
@@ -863,6 +865,7 @@
     const m = js.mirror_rtu || {};
     const tcfg = js.tcp || {};
     const lu = js.local_units || {};
+    $("tcp_unit1").value = (lu.unit1_id ?? 2);
     const hr = js.hr || {};
     const b = js.branding || {};
     const d = js.device || {};
@@ -896,17 +899,25 @@
     stopbits: +$("mir_stop").value,
     bytesize: +$("mir_byte").value
   },
-  tcp: { port: +$("tcp_port").value }
+  tcp: { port: +$("tcp_port").value },
+  local_units: { unit1_id: +$("tcp_unit1").value },
+
+  // Fixed HR window (no UI)
+  hr: { start: 0, count: 24 }
 };
 
 
     const adminExtras = {
-      local_units:{ unit0_id:+$("u0").value, unit1_id:+$("u1").value },
-      hr:{ start:+$("hr_start").value, count:+$("hr_count").value },
-      branding:{ phone:$("brand_phone").value, email:$("brand_email").value, youtube:$("brand_youtube").value,
-                 logo_url:$("brand_logo").value, qr_url:$("brand_qr").value },
-      device:{ model:$("device_model").value }
-    };
+  branding:{
+    phone:$("brand_phone").value,
+    email:$("brand_email").value,
+    youtube:$("brand_youtube").value,
+    logo_url:$("brand_logo").value,
+    qr_url:$("brand_qr").value
+  },
+  device:{ model:$("device_model").value }
+};
+
 
     const payload = (CURRENT_SETTINGS_ROLE==='admin') ? {...basePayload, ...adminExtras} : basePayload;
 
