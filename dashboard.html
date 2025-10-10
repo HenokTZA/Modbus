@@ -952,54 +952,47 @@ $("pinOk").onclick = ()=>{
   $("btnReload").onclick = async ()=>{ await fillSettings(); toast(t("reloaded")); };
 
   $("btnSave").onclick = async ()=>{
-    const btn=$("btnSave"); btn.disabled=true; const original=btn.textContent; btn.textContent = (LANG==="es"?"Guardando…":"Saving…");
+  const btn=$("btnSave"); btn.disabled=true; const original=btn.textContent; btn.textContent = (LANG==="es"?"Guardando…":"Saving…");
 
-    const basePayload = {
-  upstream: {
-    device_unit_id: +$("ups_uid").value,
-    poll_period_s:  +$("ups_poll").value
-  },
-  mirror_rtu: {
-    slave_id: +$("mir_slave").value,
-    baudrate: +$("mir_baud").value,
-    parity: $("mir_parity").value,
-    stopbits: +$("mir_stop").value,
-    bytesize: +$("mir_byte").value
-  },
-  tcp: { port: +$("tcp_port").value },
-  local_units: { unit1_id: +$("tcp_unit1").value },
-  // Fix HR window to 0..23 (24 regs)
-  hr: { start: 0, count: 24 }
+  const basePayload = {
+    upstream: {
+      device_unit_id: +$("ups_uid").value,
+      poll_period_s:  +$("ups_poll").value
+    },
+    mirror_rtu: {
+      slave_id: +$("mir_slave").value,
+      baudrate: +$("mir_baud").value,
+      parity: $("mir_parity").value,
+      stopbits: +$("mir_stop").value,
+      bytesize: +$("mir_byte").value
+    },
+    tcp: { port: +$("tcp_port").value },
+    // keep only Unit1 (1-based) editable under TCP
+    local_units: { unit1_id: +$("tcp_unit1").value },
+    // fixed HR window 0..23 (24 regs)
+    hr: { start: 0, count: 24 }
+  };
+
+  // Admin can also change branding/device; DO NOT touch local_units/hr here
+  const adminExtras = {
+    branding:{
+      phone:$("brand_phone").value, email:$("brand_email").value,
+      youtube:$("brand_youtube").value, logo_url:$("brand_logo").value, qr_url:$("brand_qr").value
+    },
+    device:{ model:$("device_model").value }
+  };
+
+  const payload = (CURRENT_SETTINGS_ROLE==='admin') ? {...basePayload, ...adminExtras} : basePayload;
+
+  try{
+    const r=await fetch("/api/settings",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    const js=await r.json();
+    if(js.ok){ await fillSettings(); toast(t("saved")); closeConfigModal(); }
+    else{ toast(js.detail||t("saveFail")); }
+  }catch(e){ toast(t("saveFail")); }
+  finally{ btn.disabled=false; btn.textContent=original; }
 };
 
-    const safeNum = (elId, fallback) => {
-   const el = $(elId);
-   if (!el) return fallback;
-   const n = +el.value;
-   return Number.isFinite(n) ? n : fallback;
- };
-
-    const adminExtras = {
-      local_units:{ 
-    unit0_id: (js?.local_units?.unit0_id ?? 1),  // or safeNum("u0", 1)
-    unit1_id: safeNum("tcp_unit1", 2)
-  },
-  hr:{ start: 0, count: 24 }, // keep fixed (your UI doesn’t expose these)
-      branding:{ phone:$("brand_phone").value, email:$("brand_email").value, youtube:$("brand_youtube").value,
-                 logo_url:$("brand_logo").value, qr_url:$("brand_qr").value },
-      device:{ model:$("device_model").value }
-    };
-
-    const payload = (CURRENT_SETTINGS_ROLE==='admin') ? {...basePayload, ...adminExtras} : basePayload;
-
-    try{
-      const r=await fetch("/api/settings",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-      const js=await r.json();
-      if(js.ok){ await fillSettings(); toast(t("saved")); closeConfigModal(); }
-      else{ toast(js.detail||t("saveFail")); }
-    }catch(e){ toast(t("saveFail")); }
-    finally{ btn.disabled=false; btn.textContent=original; }
-  };
 
   /* ==================== MAIN LOOPS & LANG SWITCH ==================== */
   async function mainTick(){
