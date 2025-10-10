@@ -325,7 +325,7 @@
   <div class="pinbox">
     <div id="i.pinTitle" class="pin-title">Ingrese PIN de Ajustes</div>
     <div class="pin-row">
-      <input id="settingsPin" class="pin-input" type="password" placeholder="PIN" maxlength="8" inputmode="numeric" autofocus>
+      <input id="settingsPin" class="pin-input" type="password" placeholder="PIN" maxlength="32" inputmode="text" autofocus>
       <button id="pinOk" class="btn primary">OK</button>
       <button id="pinChangeBtn" class="btn" style="display:none">Cambiar</button>
     </div>
@@ -1033,6 +1033,19 @@ $("pinOk").onclick = ()=>{
     $("settingsPin").value = ""; $("settingsPin").focus();
   }
 };
+
+// Close the PIN modal when clicking outside it
+$("pinBackdrop").addEventListener("click", (e) => {
+  if (e.target === $("pinBackdrop")) closeSettingsPin();
+});
+
+// Close the PIN modal when pressing Escape
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && $("pinBackdrop").style.display === "flex") {
+    closeSettingsPin();
+  }
+});
+
 
   
   $("settingsPin").addEventListener("keydown",(e)=>{ if(e.key==="Enter") $("pinOk").click(); });
