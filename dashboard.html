@@ -318,6 +318,23 @@
   </div>
 </div>
 
+<!-- Logout Confirm Modal -->
+<div id="logoutBackdrop" class="modal-backdrop">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="logoutTitle">
+    <header>
+      <div id="logoutTitle">¿Cerrar sesión?</div>
+      <button id="btnLogoutClose" class="icon-btn">✖</button>
+    </header>
+    <div class="content">
+      <p id="logoutMsg">Se cerrará la sesión actual y volverá a la pantalla de acceso.</p>
+      <div class="actions">
+        <button id="btnLogoutCancel" class="btn"><span id="i.no">No</span></button>
+        <button id="btnLogoutYes" class="btn primary danger">⎋ <span id="i.logout">Salir</span></button>
+      </div>
+    </div>
+  </div>
+</div>
+
 
 
 <!-- ====== PIN Modal (reused for user/admin) ====== -->
@@ -411,7 +428,9 @@
 <script>
   /* ==================== I18N STRINGS ==================== */
   const I18N = {
-    es: {     
+    es: {
+      logoutTitle: "¿Cerrar sesión?",
+      logoutMsg: "Se cerrará la sesión actual y volverá a la pantalla de acceso.",     
       logout: "Salir",
       resetPw: "Restablecer Contraseñas",
       resetPwTitle: "¿Restablecer contraseñas?",
@@ -514,6 +533,8 @@
       }
     },
     en: {
+      logoutTitle: "Log out?",
+      logoutMsg: "You’ll be signed out and returned to the access screen.",
       logout: "Logout",
       resetPw: "Reset Passwords",
       resetPwTitle: "Reset passwords?",
@@ -777,6 +798,9 @@
     $("resetPwMsg").textContent   = t("resetPwMsg");
     $("i.yes").textContent      = t("yes");
     $("i.no").textContent       = t("no");
+    $("logoutTitle").textContent = t("logoutTitle");
+    $("logoutMsg").textContent   = t("logoutMsg");
+
 
     // Set the dynamic PIN title according to current role, if modal is open
     const pinTitle = CURRENT_SETTINGS_ROLE === 'admin' ? t("pinAdminTitle")
@@ -838,16 +862,35 @@
 
 
 
-  $("btnLogout").onclick = async ()=>{
-    const msg = (LANG==="es") ? "¿Cerrar sesión?" : "Log out?";
-    if(!confirm(msg)) return;
-    setAuth(null, null);                  // clear token/scope
-    try { $("backdrop").style.display="none"; } catch(_) {}
-    try { $("pinBackdrop").style.display="none"; } catch(_) {}
-    $("gatePin").value = "";
-    showGate();
-    toast(LANG==="es" ? "Sesión cerrada." : "Logged out.");
-  };
+  // Open the nice modal instead of window.confirm()
+$("btnLogout").onclick = () => {
+  $("logoutBackdrop").style.display = "flex";
+};
+
+// Close helpers
+const closeLogoutModal = () => { $("logoutBackdrop").style.display = "none"; };
+
+// Wire close buttons / backdrop / Esc
+$("btnLogoutClose").onclick = closeLogoutModal;
+$("btnLogoutCancel").onclick = closeLogoutModal;
+$("logoutBackdrop").addEventListener("click", (e) => {
+  if (e.target === $("logoutBackdrop")) closeLogoutModal();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && $("logoutBackdrop").style.display === "flex") closeLogoutModal();
+});
+
+// Confirm logout
+$("btnLogoutYes").onclick = () => {
+  setAuth(null, null);                  // clear token/scope
+  try { $("backdrop").style.display="none"; } catch(_){}
+  try { $("pinBackdrop").style.display="none"; } catch(_){}
+  $("gatePin").value = "";
+  closeLogoutModal();
+  showGate();
+  toast(LANG==="es" ? "Sesión cerrada." : "Logged out.");
+};
+
 
 
 
@@ -1059,19 +1102,21 @@ $("btnResetPwNo").onclick = ()=>{
 };
 const closeSettingsPin = ()=>{ $("pinBackdrop").style.display="none"; };
 
-$("pinChangeBtn").onclick = ()=>{
+$("pinChangeBtn").onclick = async ()=>{
   if (CURRENT_SETTINGS_ROLE !== 'user') return;
   const oldP = prompt(t("enterOldUser"));
-  if (oldP===null) return;
-  if (oldP !== getUserPin()){ alert(t("wrongOld")); return; }
-  try {
-  await changePin("user", oldP.trim(), newP.trim());
-  alert(t("changedOk"));
-} catch(e){ alert(t("wrongOld")); }
+  if (oldP === null) return;
+  const newP = prompt(t("enterNewUser"));
+  if (newP === null || !newP.trim()) return;
 
-  setUserPin(newP.trim());
-  alert(t("changedOk"));
+  try {
+    await changePin("user", oldP.trim(), newP.trim());  // server-side change
+    alert(t("changedOk"));
+  } catch (e) {
+    alert(t("wrongOld"));
+  }
 };
+
 
 $("pinOk").onclick = async ()=>{
   const val = $("settingsPin").value.trim();
