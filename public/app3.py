@@ -16,7 +16,6 @@ import uvicorn
 from alarms import AlarmsEngine
 import time
 
-from fastapi import Response
 
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
@@ -26,23 +25,11 @@ from contextlib import asynccontextmanager
 app = FastAPI()
 
 # serve ./static at /static (use absolute path so it works no matter the cwd)
-"""
 app.mount(
     "/static",
     StaticFiles(directory=str(Path(__file__).parent / "static")),
     name="static",
 )
-"""
-
-PUBLIC_DIR = Path(__file__).parent / "public"
-
-# Serve static assets from /public (e.g., /public/style.css, /public/app.js)
-app.mount(
-    "/public",
-    StaticFiles(directory=str(PUBLIC_DIR)),
-    name="public",
-)
-
 
 ALARM_ENGINE = AlarmsEngine()
 LAST_GOOD_POLL_MONO = None  # monotonic() timestamp of last successful upstream poll
@@ -975,32 +962,11 @@ async def put_settings(payload: Dict[str, Any] = Body(...)):
     return JSONResponse({"ok": True})
 
 
-"""
+
 # Serve external dashboard.html at root
 @app.get("/")
 async def root():
     return FileResponse("dashboard.html", media_type="text/html")
-"""
-
-
-@app.get("/")
-async def serve_root():
-    # Login page
-    return FileResponse(str(PUBLIC_DIR / "index.html"), media_type="text/html")
-
-@app.get("/dashboard")
-async def serve_dashboard():
-    return FileResponse(str(PUBLIC_DIR / "dashboard.html"), media_type="text/html")
-
-@app.get("/settings-user")
-async def serve_settings_user():
-    return FileResponse(str(PUBLIC_DIR / "settings-user.html"), media_type="text/html")
-
-@app.get("/settings-admin")
-async def serve_settings_admin():
-    return FileResponse(str(PUBLIC_DIR / "settings-admin.html"), media_type="text/html")
-
-
 
 # ================ Server boot & tasks =================
 async def start_web():

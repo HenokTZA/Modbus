@@ -1,0 +1,26 @@
+/* Paste your existing <style> content here. Keep class/id names as-is. */
+/* Example: */
+body{font-family:system-ui,Segoe UI,Roboto,Inter,Arial;margin:0;background:#0b1220;color:#e8eefc}
+header{padding:12px 16px;border-bottom:1px solid #223;font-weight:600;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.hdr-right{display:flex;align-items:center;gap:8px}
+select.lang{background:#0f1830;border:1px solid #223;color:#9fc3ff;border-radius:10px;padding:6px 10px;cursor:pointer}
+.icon-btn{cursor:pointer;border:1px solid #223;background:#0f1830;color:#9fc3ff;border-radius:10px;padding:6px 10px}
+.icon-btn:hover{background:#13213d}
+main{padding:16px;display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.card{background:#111a2b;border:1px solid #223;border-radius:14px;padding:14px}
+.k{font-size:12px;color:#88a;text-transform:uppercase;letter-spacing:.1em}
+.v{font-size:28px;margin-top:6px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:6px 8px;border-bottom:1px solid #223;text-align:left}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.pill{font-size:12px;color:#88a;padding:2px 8px;border:1px solid #223;border-radius:999px}
+.toast{position:fixed;bottom:16px;right:16px;background:#11213a;border:1px solid #2a3b66;padding:10px 12px;border-radius:10px;display:none;z-index:1200}
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:1000}
+.modal{background:#0f1830;border:1px solid #223;border-radius:14px;width:min(820px,92vw);max-height:86vh;overflow:auto}
+.pill2{padding:2px 8px;border-radius:999px;font-size:.85rem;display:inline-block;border:1px solid #223}
+.pill2.green{background:#10331a;color:#41d888}
+.pill2.red{background:#331314;color:#ff6b6b}
+.pill2.orange{background:#332610;color:#ffb454}
+.pill2.black{background:#1a1f2d;color:#e8eefc}
+
+/* topbar bits, qr, logo, etc... (keep your versions) */

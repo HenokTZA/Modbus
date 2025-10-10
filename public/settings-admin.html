@@ -1,0 +1,71 @@
+<!doctype html><meta charset="utf-8">
+<title>Admin Settings • Modbus Mirror</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="./static/css/styles.css">
+<body>
+<header>
+  <div id="i.cfgTitle">Admin Settings</div>
+  <div class="hdr-right">
+    <select id="langSel" class="lang"><option value="es">Español</option><option value="en">English</option></select>
+    <button id="btnBack" class="icon-btn">⬅️ Dashboard</button>
+  </div>
+</header>
+
+<main class="content" style="padding:16px">
+  <p id="i.cfgHint" class="hint"></p>
+
+  <section id="secUpstream">
+    <h3>RTU de Origen (CH1)</h3>
+    <div class="grid">
+      <div><label>ID de Dispositivo</label><input id="ups_uid" type="number" min="1" max="247"></div>
+      <div><label>Periodo de sondeo (s)</label><input id="ups_poll" type="number" step="0.1" min="0.1"></div>
+    </div>
+  </section>
+
+  <h3>RTU Espejo (CH2)</h3>
+  <div class="grid">
+    <div><label>ID de Esclavo</label><input id="mir_slave" type="number" min="1" max="247"></div>
+    <div><label>Baudios</label><input id="mir_baud" type="number"></div>
+    <div><label>Paridad</label><select id="mir_parity"><option>N</option><option>E</option><option>O</option></select></div>
+    <div><label>Bits de parada</label><input id="mir_stop" type="number" min="1" max="2"></div>
+    <div><label>Tamaño de byte</label><input id="mir_byte" type="number" min="5" max="8"></div>
+  </div>
+
+  <h3>Esclavo TCP</h3>
+  <div class="grid">
+    <div><label>Puerto TCP</label><input id="tcp_port" type="number" min="1" max="65535"></div>
+    <div><label id="i.tcpUnit1">ID de Esclavo TCP (Modbus Poll, base 1)</label><input id="tcp_unit1" type="number" min="1" max="247"></div>
+  </div>
+
+  <section id="secBranding" style="margin-top:16px">
+    <h3>Marca y Dispositivo</h3>
+    <div class="grid">
+      <div><label>Teléfono</label><input id="brand_phone"></div>
+      <div><label>Email</label><input id="brand_email"></div>
+      <div><label>URL de YouTube</label><input id="brand_youtube"></div>
+      <div><label>URL del Logo</label><input id="brand_logo"></div>
+      <div><label>URL de QR (opcional)</label><input id="brand_qr"></div>
+      <div><label>Modelo (p.ej. CEA-24/20)</label><input id="device_model"></div>
+    </div>
+  </section>
+
+  <div class="actions"><button class="btn" id="btnReload"></button><button class="btn primary" id="btnSave"></button></div>
+</main>
+
+<div id="toast" class="toast"></div>
+
+<script src="./static/js/common.js"></script>
+<script src="./static/js/api.js"></script>
+<script src="./static/js/settings.js"></script>
+<script>
+  (async ()=>{
+    // gate for admin role
+    await requireSettingsRole("admin");
+    wireSettingsPage("admin");
+    $("i.cfgHint").textContent = t("cfgHint");
+    $("btnReload").textContent = t("reload");
+    $("btnSave").textContent   = t("save");
+    await fillSettings("admin");
+  })();
+</script>
+</body>

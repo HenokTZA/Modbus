@@ -1,0 +1,53 @@
+<!doctype html><meta charset="utf-8">
+<title>Login • Modbus Mirror</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="./static/css/styles.css">
+<body>
+  <main style="display:flex;min-height:100vh;align-items:center;justify-content:center">
+    <div class="gate-card" style="background:#0f1830;border:1px solid #223;border-radius:16px;padding:20px;width:min(420px,92vw)">
+      <div class="gate-title" id="gateTitle">Login</div>
+      <div class="gate-sub" id="gateSub">Enter dashboard password</div>
+      <div class="gate-row" style="display:flex;gap:8px;align-items:center">
+        <input id="gatePin" class="gate-input" type="password" placeholder="Password" maxlength="64" inputmode="text" autofocus>
+        <button id="gateBtn" class="gate-btn">Enter</button>
+        <button id="gateChangeBtn" class="gate-btn" style="background:#1f3f88">Change</button>
+      </div>
+      <div id="gateErr" class="gate-err" style="min-height:18px"></div>
+      <div style="margin-top:10px;font-size:12px;color:#9ab">Default: <code>AT-MOD-01</code></div>
+    </div>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="./static/js/common.js"></script>
+  <script>
+    // i18n labels
+    $("gateTitle").textContent = t("gateTitle");
+    $("gateSub").textContent   = t("gateSub");
+    $("gateBtn").textContent   = t("gateEnter");
+
+    $("gateBtn").onclick = ()=>{
+      const val = $("gatePin").value.trim();
+      if (val === getGatePin()){
+        setGateSession(true);
+        location.replace("./dashboard.html");
+      } else {
+        $("gateErr").textContent = t("gateErr");
+        $("gatePin").value="";
+        $("gatePin").focus();
+      }
+    };
+
+    $("gateChangeBtn").onclick = ()=>{
+      const oldP = prompt(t("enterOldGate"));
+      if (oldP===null) return;
+      if (oldP !== getGatePin()){ alert(t("wrongOld")); return; }
+      const New = prompt(t("enterNewGate"));
+      if (!New || !New.trim()) return;
+      setGatePin(New.trim());
+      alert(t("changedOk"));
+    };
+
+    $("gatePin").addEventListener("keydown",(e)=>{ if(e.key==="Enter") $("gateBtn").click(); });
+  </script>
+</body>
