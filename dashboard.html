@@ -52,6 +52,15 @@
   .model-line{background:#a7c8de;font-weight:700;margin-top:6px;padding:6px 10px;border-radius:6px}
   .model-line span{color:#062e46}
 
+  .hdr-left{display:flex;align-items:center;gap:8px}
+.icon-btn.warn{border-color:#3a2a12;background:#2c1f10;color:#ffc180}
+.icon-btn.warn:hover{background:#3a2a12}
+
+/* Make the destructive action red-ish */
+.btn.primary.danger{background:#8a2430;border-color:#5a1a22}
+.btn.primary.danger:hover{background:#a92c3a}
+
+
   .top-row{grid-column:1/-1;display:grid;grid-template-columns:repeat(3,minmax(280px,1fr));gap:16px}
   .kv{display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center}
   .mono{font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
@@ -229,6 +238,7 @@
 <header>
   <div class="hdr-left">
     <button id="btnLogout" class="icon-btn danger" title="Logout">⎋ <span id="i.logout">Logout</span></button>
+    <button id="btnResetPw" class="icon-btn warn" title="Reset Passwords">↺ <span id="i.resetPw">Reset Passwords</span></button>
     <div id="i.appTitle">Modbus Mirror • Panel en Vivo</div>
   </div>
   <div class="hdr-right">
@@ -290,6 +300,25 @@
     </tr></thead><tbody></tbody></table>
   </section>
 </main>
+
+<!-- Reset Passwords Confirm Modal -->
+<div id="resetPwBackdrop" class="modal-backdrop">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="resetPwTitle">
+    <header>
+      <div id="resetPwTitle">Reset passwords?</div>
+      <button id="btnResetPwClose" class="icon-btn">✖</button>
+    </header>
+    <div class="content">
+      <p id="resetPwMsg">This will restore all dashboard passwords to factory defaults. Continue?</p>
+      <div class="actions">
+        <button id="btnResetPwNo" class="btn"><span id="i.no">No</span></button>
+        <button id="btnResetPwYes" class="btn primary danger"><span id="i.yes">Yes</span></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
 
 <!-- ====== PIN Modal (reused for user/admin) ====== -->
 <div id="pinBackdrop" class="modal-backdrop">
@@ -382,8 +411,14 @@
 <script>
   /* ==================== I18N STRINGS ==================== */
   const I18N = {
-    es: {
+    es: {     
       logout: "Salir",
+      resetPw: "Restablecer Contraseñas",
+      resetPwTitle: "¿Restablecer contraseñas?",
+      resetPwMsg: "Esto restaurará las contraseñas del tablero a los valores de fábrica. ¿Desea continuar?",
+      yes: "Sí",
+      no: "No",
+      resetDone: "Contraseñas restablecidas.",
       changePass: "Cambiar",
       enterOldGate: "Ingrese la contraseña actual del panel",
       enterNewGate: "Ingrese la nueva contraseña del panel",
@@ -480,6 +515,12 @@
     },
     en: {
       logout: "Logout",
+      resetPw: "Reset Passwords",
+      resetPwTitle: "Reset passwords?",
+      resetPwMsg: "This will restore dashboard passwords to factory defaults. Continue?",
+      yes: "Yes",
+      no: "No",
+      resetDone: "Passwords reset.",
       changePass: "Change",
       enterOldGate: "Enter current dashboard password",
       enterNewGate: "Enter new dashboard password",
@@ -682,6 +723,11 @@ if (!localStorage.getItem(LS_USER_PIN)) setUserPin(DEFAULT_USER_PIN);
     $("btnReload").textContent = t("reload");
     $("btnSave").textContent = t("save");
     $("i.logout").textContent = t("logout");
+    $("i.resetPw").textContent  = t("resetPw");
+    $("resetPwTitle").textContent = t("resetPwTitle");
+    $("resetPwMsg").textContent   = t("resetPwMsg");
+    $("i.yes").textContent      = t("yes");
+    $("i.no").textContent       = t("no");
 
     // Set the dynamic PIN title according to current role, if modal is open
     const pinTitle = CURRENT_SETTINGS_ROLE === 'admin' ? t("pinAdminTitle")
@@ -746,6 +792,38 @@ $("btnLogout").onclick = ()=>{
 
   // Small toast for feedback
   toast(LANG==="es" ? "Sesión cerrada." : "Logged out.");
+};
+
+
+// Open/close the Reset Passwords confirmation
+$("btnResetPw").onclick = ()=>{ 
+  $("resetPwBackdrop").style.display = "flex"; 
+};
+$("btnResetPwClose").onclick = ()=>{ 
+  $("resetPwBackdrop").style.display = "none"; 
+};
+$("resetPwBackdrop").addEventListener("click",(e)=>{
+  if(e.target === $("resetPwBackdrop")) $("resetPwBackdrop").style.display = "none";
+});
+$("btnResetPwNo").onclick = ()=>{ 
+  $("resetPwBackdrop").style.display = "none"; 
+};
+
+// Perform the reset to defaults
+$("btnResetPwYes").onclick = ()=>{
+  // restore default values for dashboard & user settings pins
+  setGatePin(DEFAULT_GATE_PIN);     // "AT-MOD-01"
+  setUserPin(DEFAULT_USER_PIN);     // "AT-User-1"
+
+  // end current session and force re-gate
+  localStorage.removeItem("dash_gate_ok");
+
+  // close modal and show gate
+  $("resetPwBackdrop").style.display = "none";
+  $("gatePin").value = "";
+  showGate();
+
+  toast(t("resetDone"));
 };
 
 
