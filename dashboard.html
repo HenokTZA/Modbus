@@ -380,7 +380,7 @@
       enterOldUser: "Ingrese la contraseña actual de Ajustes de Usuario",
       enterNewUser: "Ingrese la nueva contraseña de Ajustes de Usuario",    
       wrongOld: "Contraseña actual incorrecta.",
-      changedOk: "Contraseña cambiada correctamente."
+      changedOk: "Contraseña cambiada correctamente.",
       tcpUnit1: "ID de Esclavo TCP (Modbus Poll, base 1)",
       appTitle: "Modbus Mirror • Panel en Vivo",
       userSettingsBtn: "Ajustes de Usuario",
@@ -475,7 +475,7 @@
       enterOldUser: "Enter current User Settings password",
       enterNewUser: "Enter new User Settings password",
       wrongOld: "Wrong current password.",
-      changedOk: "Password changed."
+      changedOk: "Password changed.",
       tcpUnit1: "TCP Slave Unit ID (Modbus Poll, 1-based)",
       appTitle: "Modbus Mirror • Live Dashboard",
       userSettingsBtn: "User Settings",
@@ -972,10 +972,19 @@ $("pinOk").onclick = ()=>{
   hr: { start: 0, count: 24 }
 };
 
+    const safeNum = (elId, fallback) => {
+   const el = $(elId);
+   if (!el) return fallback;
+   const n = +el.value;
+   return Number.isFinite(n) ? n : fallback;
+ };
 
     const adminExtras = {
-      local_units:{ unit0_id:+$("u0").value, unit1_id:+$("u1").value },
-      hr:{ start:+$("hr_start").value, count:+$("hr_count").value },
+      local_units:{ 
+    unit0_id: (js?.local_units?.unit0_id ?? 1),  // or safeNum("u0", 1)
+    unit1_id: safeNum("tcp_unit1", 2)
+  },
+  hr:{ start: 0, count: 24 }, // keep fixed (your UI doesn’t expose these)
       branding:{ phone:$("brand_phone").value, email:$("brand_email").value, youtube:$("brand_youtube").value,
                  logo_url:$("brand_logo").value, qr_url:$("brand_qr").value },
       device:{ model:$("device_model").value }
