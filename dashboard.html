@@ -827,16 +827,14 @@
   $("gatePin").addEventListener("keydown",(e)=>{ if(e.key==="Enter") $("gateBtn").click(); });
 
 
-$("gateChangeBtn").onclick = ()=>{
-  const oldP = prompt(t("enterOldGate"));
-  if (oldP===null) return; // cancelled
-  if (oldP !== getGatePin()){ alert(t("wrongOld")); return; }
-  const newP = prompt(t("enterNewGate"));
-  if (newP===null || !newP.trim()) return;
-  setGatePin(newP.trim());
-  alert(t("changedOk"));
+  $("gateChangeBtn").onclick = async ()=>{
+  const oldP = prompt(t("enterOldGate")); if (oldP===null) return;
+  const newP = prompt(t("enterNewGate")); if (newP===null || !newP.trim()) return;
+  try {
+    await changePin("gate", oldP.trim(), newP.trim());
+    alert(t("changedOk"));
+  } catch(e){ alert(t("wrongOld")); }
 };
-
 
 
 
@@ -868,23 +866,18 @@ $("btnResetPwNo").onclick = ()=>{
 };
 
 // Perform the reset to defaults
-$("btnResetPwYes").onclick = ()=>{
-  // restore default values for dashboard & user settings pins
-  setGatePin(DEFAULT_GATE_PIN);     // "AT-MOD-01"
-  setUserPin(DEFAULT_USER_PIN);     // "AT-User-1"
-
-  // end current session and force re-gate
-  localStorage.removeItem("dash_gate_ok");
-
-  // close modal and show gate
-  $("resetPwBackdrop").style.display = "none";
-  $("gatePin").value = "";
-  showGate();
-
-  toast(t("resetDone"));
+  $("btnResetPwYes").onclick = async ()=>{
+  try {
+    await resetAllPins();                 // POST /api/auth/reset
+    setAuth(null, null);                  // drop token
+    $("resetPwBackdrop").style.display = "none";
+    $("gatePin").value = "";
+    showGate();
+    toast(t("resetDone"));
+  } catch(e){
+    toast(t("saveFail"));
+  }
 };
-
-
 
 
   /* ==================== TOP BAR FROM /api/settings ==================== */
@@ -946,7 +939,7 @@ $("btnResetPwYes").onclick = ()=>{
   async function refreshTopCards(){
     try{
       const [measR, alarmsR, statesR] = await Promise.allSettled([
-        fetch("/api/meas2"), fetch("/api/alarms2"), fetch("/api/states2")
+        apiRequest("/api/meas2"), apiRequest("/api/alarms2"), apiRequest("/api/states2")
       ]);
 
       if(measR.status==="fulfilled" && measR.value.ok) renderMeasurements(await measR.value.json());
@@ -967,7 +960,7 @@ $("btnResetPwYes").onclick = ()=>{
 
     // Fallback to /api/hr
     try{
-      const r = await fetch("/api/hr"); if(!r.ok) return;
+      const r = await apiRequest("/api/hr"); if(!r.ok) return;
       const js = await r.json();
       const raw = js.raw||[], s = js.scaled||{};
       const m = {
@@ -1071,26 +1064,29 @@ $("pinChangeBtn").onclick = ()=>{
   const oldP = prompt(t("enterOldUser"));
   if (oldP===null) return;
   if (oldP !== getUserPin()){ alert(t("wrongOld")); return; }
-  const newP = prompt(t("enterNewUser"));
-  if (newP===null || !newP.trim()) return;
+  try {
+  await changePin("user", oldP.trim(), newP.trim());
+  alert(t("changedOk"));
+} catch(e){ alert(t("wrongOld")); }
+
   setUserPin(newP.trim());
   alert(t("changedOk"));
 };
 
-$("pinOk").onclick = ()=>{
+$("pinOk").onclick = async ()=>{
   const val = $("settingsPin").value.trim();
-  let ok = false;
-  if (CURRENT_SETTINGS_ROLE==='admin') {
-    ok = (val === ADMIN_SETTINGS_PIN);          // fixed & hard-coded
-  } else {
-    ok = (val === getUserPin());                 // changeable
-  }
-  if (ok) { closeSettingsPin(); openConfigModal(CURRENT_SETTINGS_ROLE); }
-  else {
+  if(!val){ $("settingsPin").focus(); return; }
+  try{
+    await loginWithPin(CURRENT_SETTINGS_ROLE, val);     // POST /api/auth/login
+    $("pinErr").textContent = "";
+    closeSettingsPin();
+    openConfigModal(CURRENT_SETTINGS_ROLE);
+  }catch(e){
     $("pinErr").textContent = t("gateErr");
     $("settingsPin").value = ""; $("settingsPin").focus();
   }
 };
+
 
 // Close the PIN modal when clicking outside it
 $("pinBackdrop").addEventListener("click", (e) => {
@@ -1113,7 +1109,9 @@ document.addEventListener("keydown", (e) => {
   $("btnAdminSettings").addEventListener("click", () => openSettingsPin("admin"));
 
   async function fillSettings(){
-    const r = await fetch("/api/settings"); const js = await r.json();
+    const r = await apiRequest("/api/settings", { method:"GET" });
+    const js = await r.json();
+
     renderTopbarFromSettings(js);
     const u = js.upstream || {};
     const m = js.mirror_rtu || {};
@@ -1170,7 +1168,11 @@ document.addEventListener("keydown", (e) => {
   const payload = (CURRENT_SETTINGS_ROLE==='admin') ? {...basePayload, ...adminExtras} : basePayload;
 
   try{
-    const r=await fetch("/api/settings",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    const r = await apiRequest("/api/settings", {
+  method:"PUT",
+  body: JSON.stringify(payload)
+});
+
     const js=await r.json();
     if(js.ok){ await fillSettings(); toast(t("saved")); closeConfigModal(); }
     else{ toast(js.detail||t("saveFail")); }
@@ -1199,12 +1201,11 @@ document.addEventListener("keydown", (e) => {
   });
 
  document.addEventListener("DOMContentLoaded", async ()=>{
-  maybeResetFromURL();
-  migratePinsOnce();             // << add this line
+
   applyI18nStatic();
   $("gateBtn").textContent = t("gateEnter");
-  checkGate();
-  if (localStorage.getItem("dash_gate_ok")==="1") { await fillSettings(); }
+  await checkGate();                    // will show the gate if not authed
+if (AUTH_TOKEN) { await fillSettings(); }
   mainTick();
 });
  
