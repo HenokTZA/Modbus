@@ -926,6 +926,8 @@ $("pinOk").onclick = ()=>{
   $("settingsPin").addEventListener("keydown",(e)=>{ if(e.key==="Enter") $("pinOk").click(); });
   $("btnClose").onclick = closeConfigModal;
   $("backdrop").addEventListener("click",(e)=>{ if(e.target===$("backdrop")) closeConfigModal(); });
+  $("btnUserSettings").addEventListener("click", () => openSettingsPin("user"));
+  $("btnAdminSettings").addEventListener("click", () => openSettingsPin("admin"));
 
   async function fillSettings(){
     const r = await fetch("/api/settings"); const js = await r.json();
@@ -994,6 +996,24 @@ $("pinOk").onclick = ()=>{
 };
 
 
+function migratePinsOnce(){
+  // If someone used the old defaults, replace them with the new defaults
+  const g = localStorage.getItem(LS_GATE_PIN);
+  const u = localStorage.getItem(LS_USER_PIN);
+  if (g === "1234") setGatePin(DEFAULT_GATE_PIN);    // -> "AT-MOD-01"
+  if (u === "1111") setUserPin(DEFAULT_USER_PIN);    // -> "AT-User-1"
+}
+
+function maybeResetFromURL(){
+  const url = new URL(location.href);
+  if (url.searchParams.get("reset") === "1") {
+    localStorage.removeItem(LS_GATE_PIN);
+    localStorage.removeItem(LS_USER_PIN);
+    localStorage.removeItem("dash_gate_ok");
+  }
+}
+
+
   /* ==================== MAIN LOOPS & LANG SWITCH ==================== */
   async function mainTick(){
     await Promise.all([tickTiles(), refreshTopCards()]);
@@ -1011,11 +1031,14 @@ $("pinOk").onclick = ()=>{
     await refreshTopCards();
   });
 
-  document.addEventListener("DOMContentLoaded", async ()=>{
-    applyI18nStatic();
-    $("gateBtn").textContent = t("gateEnter");
-    checkGate();
-    if (localStorage.getItem("dash_gate_ok")==="1") { await fillSettings(); }
-    mainTick();
-  });
+ document.addEventListener("DOMContentLoaded", async ()=>{
+  maybeResetFromURL();
+  migratePinsOnce();             // << add this line
+  applyI18nStatic();
+  $("gateBtn").textContent = t("gateEnter");
+  checkGate();
+  if (localStorage.getItem("dash_gate_ok")==="1") { await fillSettings(); }
+  mainTick();
+});
+ 
 </script>
