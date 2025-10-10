@@ -619,75 +619,26 @@
 
   /* ==================== CONFIG & HELPERS ==================== */
 
-// --- Auth state & helpers (server-side PINs) ---
-  let AUTH_TOKEN = sessionStorage.getItem("auth_token") || null;
-  let AUTH_SCOPE = sessionStorage.getItem("auth_scope") || null; // "gate" | "user" | "admin"
+  // Defaults (only used to seed storage the first time)
+const DEFAULT_GATE_PIN = "AT-MOD-01";
+const DEFAULT_USER_PIN = "AT-User-1";
+// Admin is fixed & hard-coded
+const ADMIN_SETTINGS_PIN = "AT1959";
 
-  function setAuth(token, scope){
-    AUTH_TOKEN = token; AUTH_SCOPE = scope;
-    if (token) {
-      sessionStorage.setItem("auth_token", token);
-      sessionStorage.setItem("auth_scope", scope || "");
-    } else {
-      sessionStorage.removeItem("auth_token");
-      sessionStorage.removeItem("auth_scope");
-    }
-  }
+// Storage keys
+const LS_GATE_PIN = "dash_gate_pin";
+const LS_USER_PIN = "dash_user_pin";
 
-  async function apiRequest(path, opts = {}){
-    const headers = Object.assign(
-      {"Content-Type":"application/json"},
-      opts.headers || {},
-      AUTH_TOKEN ? {"Authorization": "Bearer " + AUTH_TOKEN} : {}
-    );
-    const res = await fetch(path, {...opts, headers});
-    // If unauthorized, force gate
-    if (res.status === 401) {
-      setAuth(null, null);
-      showGate();
-      throw new Error("Unauthorized");
-    }
-    return res;
-  }
+// getters/setters
+function getGatePin(){ return localStorage.getItem(LS_GATE_PIN) || DEFAULT_GATE_PIN; }
+function setGatePin(v){ localStorage.setItem(LS_GATE_PIN, v); }
 
-  async function loginWithPin(scope, pin){
-    // scope: "gate" | "user" | "admin"
-    const r = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ scope, pin })
-    });
-    if (!r.ok) {
-      const j = await r.json().catch(()=>({}));
-      throw new Error(j.detail || "Login failed");
-    }
-    const j = await r.json();
-    // backend should return { token, scope }
-    setAuth(j.token, j.scope || scope);
-    return j;
-  }
+function getUserPin(){ return localStorage.getItem(LS_USER_PIN) || DEFAULT_USER_PIN; }
+function setUserPin(v){ localStorage.setItem(LS_USER_PIN, v); }
 
-  async function changePin(role, oldPin, newPin){
-    // role: "gate" | "user"  (admin is fixed on server; do not allow here)
-    const r = await apiRequest("/api/auth/change", {
-      method: "POST",
-      body: JSON.stringify({ role, old_pin: oldPin, new_pin: newPin })
-    });
-    if (!r.ok) {
-      const j = await r.json().catch(()=>({}));
-      throw new Error(j.detail || "Change failed");
-    }
-    return r.json();
-  }
-
-  async function resetAllPins(){
-    const r = await apiRequest("/api/auth/reset", { method: "POST" });
-    if (!r.ok) {
-      const j = await r.json().catch(()=>({}));
-      throw new Error(j.detail || "Reset failed");
-    }
-    return r.json();
-  }
+// One-time seeding (won't overwrite if user already changed)
+if (!localStorage.getItem(LS_GATE_PIN)) setGatePin(DEFAULT_GATE_PIN);
+if (!localStorage.getItem(LS_USER_PIN)) setUserPin(DEFAULT_USER_PIN);
 
 
   let LANG = localStorage.getItem("lang") || "es";
@@ -792,40 +743,24 @@
   }
 
   /* ==================== ACCESS GATE ==================== */
-    function showGate(){ $("gate").style.display="flex"; $("gatePin").focus(); }
-  function hideGate(){ $("gate").style.display="none"; }
+  function showGate(){ $("gate").style.display="flex"; $("gatePin").focus(); }
+function hideGate(){ $("gate").style.display="none"; }
+function checkGate(){
+  if(localStorage.getItem("dash_gate_ok")==="1"){ hideGate(); return; }
+  showGate();
+}
 
-  async function checkGate(){
-    // If we already have a token, try a harmless authed call; otherwise show gate
-    if (!AUTH_TOKEN) { showGate(); return; }
-    try {
-      // Ping a lightweight authed endpoint (settings is fine)
-      const ok = await apiRequest("/api/settings", { method:"GET" });
-      if (ok.ok) { hideGate(); return; }
-      showGate();
-    } catch {
-      showGate();
-    }
+$("gateBtn").onclick = ()=>{
+  const val = $("gatePin").value.trim();
+  if(val === getGatePin()){
+    localStorage.setItem("dash_gate_ok","1");
+    hideGate();
+  }else{
+    $("gateErr").textContent = t("gateErr");
+    $("gatePin").value="";
+    $("gatePin").focus();
   }
-
-  $("gateBtn").onclick = async ()=>{
-    $("gateErr").textContent = "";
-    const val = $("gatePin").value.trim();
-    if (!val) { $("gatePin").focus(); return; }
-    try{
-      await loginWithPin("gate", val);
-      $("gatePin").value = "";
-      hideGate();
-      // On first login, hydrate UI
-      await fillSettings();
-      toast(LANG==="es" ? "Acceso concedido." : "Access granted.");
-    }catch(e){
-      $("gateErr").textContent = t("gateErr");
-      $("gatePin").value = ""; $("gatePin").focus();
-    }
-  };
-  $("gatePin").addEventListener("keydown",(e)=>{ if(e.key==="Enter") $("gateBtn").click(); });
-
+};
 
 $("gateChangeBtn").onclick = ()=>{
   const oldP = prompt(t("enterOldGate"));
@@ -837,20 +772,27 @@ $("gateChangeBtn").onclick = ()=>{
   alert(t("changedOk"));
 };
 
+$("gatePin").addEventListener("keydown",(e)=>{ if(e.key==="Enter") $("gateBtn").click(); });
 
 
+$("btnLogout").onclick = ()=>{
+  const msg = (LANG==="es") ? "¿Cerrar sesión?" : "Log out?";
+  if(!confirm(msg)) return;
 
-  $("btnLogout").onclick = async ()=>{
-    const msg = (LANG==="es") ? "¿Cerrar sesión?" : "Log out?";
-    if(!confirm(msg)) return;
-    setAuth(null, null);                  // clear token/scope
-    try { $("backdrop").style.display="none"; } catch(_) {}
-    try { $("pinBackdrop").style.display="none"; } catch(_) {}
-    $("gatePin").value = "";
-    showGate();
-    toast(LANG==="es" ? "Sesión cerrada." : "Logged out.");
-  };
+  // End current dashboard session
+  localStorage.removeItem("dash_gate_ok");
 
+  // Close modals if open
+  try { $("backdrop").style.display="none"; } catch(_) {}
+  try { $("pinBackdrop").style.display="none"; } catch(_) {}
+
+  // Show the access gate and clear input
+  $("gatePin").value = "";
+  showGate();
+
+  // Small toast for feedback
+  toast(LANG==="es" ? "Sesión cerrada." : "Logged out.");
+};
 
 
 // Open/close the Reset Passwords confirmation
@@ -1179,6 +1121,22 @@ document.addEventListener("keydown", (e) => {
 };
 
 
+function migratePinsOnce(){
+  // If someone used the old defaults, replace them with the new defaults
+  const g = localStorage.getItem(LS_GATE_PIN);
+  const u = localStorage.getItem(LS_USER_PIN);
+  if (g === "1234") setGatePin(DEFAULT_GATE_PIN);    // -> "AT-MOD-01"
+  if (u === "1111") setUserPin(DEFAULT_USER_PIN);    // -> "AT-User-1"
+}
+
+function maybeResetFromURL(){
+  const url = new URL(location.href);
+  if (url.searchParams.get("reset") === "1") {
+    localStorage.removeItem(LS_GATE_PIN);
+    localStorage.removeItem(LS_USER_PIN);
+    localStorage.removeItem("dash_gate_ok");
+  }
+}
 
 
   /* ==================== MAIN LOOPS & LANG SWITCH ==================== */
