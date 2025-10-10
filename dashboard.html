@@ -22,6 +22,11 @@
   a{color:#9fc3ff}
   .toast{position:fixed;bottom:16px;right:16px;background:#11213a;border:1px solid #2a3b66;padding:10px 12px;border-radius:10px;display:none;z-index:1200}
 
+  .hdr-left{display:flex;align-items:center;gap:8px}
+  .icon-btn.danger{border-color:#3a2230;background:#30121a;color:#ff9aa8}
+  .icon-btn.danger:hover{background:#3a1a22}
+
+
   .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:1000}
   .modal{background:#0f1830;border:1px solid #223;border-radius:14px;width:min(820px,92vw);max-height:86vh;overflow:auto}
   .modal header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #223;padding:12px 16px}
@@ -222,7 +227,10 @@
 
 
 <header>
-  <div id="i.appTitle">Modbus Mirror • Panel en Vivo</div>
+  <div class="hdr-left">
+    <button id="btnLogout" class="icon-btn danger" title="Logout">⎋ <span id="i.logout">Logout</span></button>
+    <div id="i.appTitle">Modbus Mirror • Panel en Vivo</div>
+  </div>
   <div class="hdr-right">
     <select id="langSel" class="lang" aria-label="Language">
       <option value="es">Español</option>
@@ -232,6 +240,7 @@
     <button id="btnAdminSettings" class="icon-btn" title="Admin Settings">🛠️ <span id="i.adminSettingsBtn">Ajustes de Admin</span></button>
   </div>
 </header>
+
 
 <main>
   <!-- ====== Top cards row ====== -->
@@ -374,6 +383,7 @@
   /* ==================== I18N STRINGS ==================== */
   const I18N = {
     es: {
+      logout: "Salir",
       changePass: "Cambiar",
       enterOldGate: "Ingrese la contraseña actual del panel",
       enterNewGate: "Ingrese la nueva contraseña del panel",
@@ -469,6 +479,7 @@
       }
     },
     en: {
+      logout: "Logout",
       changePass: "Change",
       enterOldGate: "Enter current dashboard password",
       enterNewGate: "Enter new dashboard password",
@@ -670,6 +681,7 @@ if (!localStorage.getItem(LS_USER_PIN)) setUserPin(DEFAULT_USER_PIN);
 
     $("btnReload").textContent = t("reload");
     $("btnSave").textContent = t("save");
+    $("i.logout").textContent = t("logout");
 
     // Set the dynamic PIN title according to current role, if modal is open
     const pinTitle = CURRENT_SETTINGS_ROLE === 'admin' ? t("pinAdminTitle")
@@ -715,6 +727,28 @@ $("gateChangeBtn").onclick = ()=>{
 };
 
 $("gatePin").addEventListener("keydown",(e)=>{ if(e.key==="Enter") $("gateBtn").click(); });
+
+
+$("btnLogout").onclick = ()=>{
+  const msg = (LANG==="es") ? "¿Cerrar sesión?" : "Log out?";
+  if(!confirm(msg)) return;
+
+  // End current dashboard session
+  localStorage.removeItem("dash_gate_ok");
+
+  // Close modals if open
+  try { $("backdrop").style.display="none"; } catch(_) {}
+  try { $("pinBackdrop").style.display="none"; } catch(_) {}
+
+  // Show the access gate and clear input
+  $("gatePin").value = "";
+  showGate();
+
+  // Small toast for feedback
+  toast(LANG==="es" ? "Sesión cerrada." : "Logged out.");
+};
+
+
 
 
   /* ==================== TOP BAR FROM /api/settings ==================== */
