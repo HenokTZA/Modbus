@@ -149,6 +149,7 @@
   overflow:hidden;
 }
 .qr img{width:120px;height:120px;display:block}
+#userChangeBackdrop { z-index: 3000; }
 
 /* Right column (model/serial) */
 .top-model{
@@ -346,6 +347,35 @@
   </div>
 </div>
 
+<!-- Change User Settings Password Modal -->
+<div id="userChangeBackdrop" class="modal-backdrop" style="display:none">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="userChangeTitle">
+    <header>
+      <div id="userChangeTitle">Change user settings password</div>
+      <button id="userChangeClose" class="icon-btn" title="Close">✖</button>
+    </header>
+    <div class="content">
+      <div class="grid">
+        <div>
+          <label id="i.enterOldUser_lbl" for="oldUserPw">Current password</label>
+          <input id="oldUserPw" type="password" placeholder="••••" maxlength="64" autocomplete="current-password">
+        </div>
+        <div>
+          <label id="i.enterNewUser_lbl" for="newUserPw">New password</label>
+          <input id="newUserPw" type="password" placeholder="New password" maxlength="64" autocomplete="new-password">
+        </div>
+      </div>
+      <p class="hint" id="userChangeHint">Tip: choose at least 4 characters.</p>
+      <div class="pin-err" id="userChangeErr" style="min-height:18px"></div>
+      <div class="actions">
+        <button id="userChangeCancel" class="btn"><span id="i.cancelUser">Cancel</span></button>
+        <button id="userChangeSave" class="btn primary"><span id="i.saveUser">Save</span></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
 
 <!-- Logout Confirm Modal -->
 <div id="logoutBackdrop" class="modal-backdrop">
@@ -458,6 +488,7 @@
   /* ==================== I18N STRINGS ==================== */
   const I18N = {
     es: {
+      userChangeTitle: "Cambiar contraseña de Ajustes de Usuario",
       gateChangeTitle: "Cambiar contraseña del panel",
       cancel: "Cancelar",
       logoutTitle: "¿Cerrar sesión?",
@@ -564,6 +595,7 @@
       }
     },
     en: {
+      userChangeTitle: "Change user settings password",
       gateChangeTitle: "Change dashboard password",
       cancel: "Cancel",
       logoutTitle: "Log out?",
@@ -841,6 +873,13 @@ async function changePin(role, oldPin, newPin){
     $("i.cancel").textContent = t("cancel");
     $("i.save").textContent = t("save");
 
+    $("userChangeTitle").textContent = t("userChangeTitle");
+    $("i.enterOldUser_lbl").textContent = t("enterOldUser");
+    $("i.enterNewUser_lbl").textContent = t("enterNewUser");
+    $("i.cancelUser").textContent = t("cancel");
+    $("i.saveUser").textContent   = t("save");
+
+
 
     // Set the dynamic PIN title according to current role, if modal is open
     const pinTitle = CURRENT_SETTINGS_ROLE === 'admin' ? t("pinAdminTitle")
@@ -974,6 +1013,67 @@ $("btnLogoutYes").onclick = () => {
   showGate();
   toast(LANG==="es" ? "Sesión cerrada." : "Logged out.");
 };
+
+// ===== Change User Settings Password Modal =====
+const openUserChange = () => {
+  $("userChangeErr").textContent = "";
+  $("oldUserPw").value = "";
+  $("newUserPw").value = "";
+  $("userChangeBackdrop").style.display = "flex";
+  setTimeout(() => $("oldUserPw").focus(), 30);
+};
+const closeUserChange = () => { $("userChangeBackdrop").style.display = "none"; };
+
+$("userChangeClose").onclick  = closeUserChange;
+$("userChangeCancel").onclick = closeUserChange;
+$("userChangeBackdrop").addEventListener("click", (e) => {
+  if (e.target === $("userChangeBackdrop")) closeUserChange();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && $("userChangeBackdrop").style.display === "flex") closeUserChange();
+});
+
+async function submitUserChange(){
+  const oldP = $("oldUserPw").value.trim();
+  const newP = $("newUserPw").value.trim();
+  const err  = $("userChangeErr");
+  err.textContent = "";
+
+  if (!oldP || !newP) {
+    err.textContent = (LANG==="es") ? "Complete ambos campos." : "Please fill both fields.";
+    return;
+  }
+  if (newP.length < 4) {
+    err.textContent = (LANG==="es") ? "La nueva contraseña es muy corta." : "New password is too short.";
+    return;
+  }
+
+  // Preserve the current token/scope so we can restore after a temporary user login
+  const prevToken = AUTH_TOKEN;
+  const prevScope = AUTH_SCOPE;
+
+  try {
+    // Ensure we have a 'user' scope token to call /api/auth/change for user role
+    if (AUTH_SCOPE !== "user") {
+      await loginWithPin("user", oldP); // temporary user auth
+    }
+    await changePin("user", oldP, newP);
+    toast(t("changedOk"));
+    closeUserChange();
+
+    // After changing, let the operator immediately re-enter the new PIN for settings
+    openSettingsPin("user");
+  } catch (e) {
+    err.textContent = t("wrongOld");
+  } finally {
+    // Restore whatever token we had before opening this modal (dashboard/user/none)
+    setAuth(prevToken, prevScope);
+  }
+}
+
+$("userChangeSave").onclick = submitUserChange;
+$("newUserPw").addEventListener("keydown", (e)=>{ if(e.key==="Enter") submitUserChange(); });
+$("oldUserPw").addEventListener("keydown", (e)=>{ if(e.key==="Enter") submitUserChange(); });
 
 
 
@@ -1187,22 +1287,13 @@ $("btnResetPwNo").onclick = ()=>{
 };
 const closeSettingsPin = ()=>{ $("pinBackdrop").style.display="none"; };
 
-$("pinChangeBtn").onclick = async () => {
+// Open the "Change User Settings Password" modal from the PIN dialog
+$("pinChangeBtn").onclick = () => {
   if (CURRENT_SETTINGS_ROLE !== 'user') return;
-  const oldP = prompt(t("enterOldUser")); if (oldP === null) return;
-  const newP = prompt(t("enterNewUser")); if (newP === null || !newP.trim()) return;
-
-  try {
-    // Ensure we have any valid token; if not, login as user with old password
-    if (!AUTH_TOKEN || AUTH_SCOPE === "dashboard") {
-      await loginWithPin("user", oldP.trim()); // get token with 'user' scope
-    }
-    await changePin("user", oldP.trim(), newP.trim());
-    alert(t("changedOk"));
-  } catch (e) {
-    alert(t("wrongOld"));
-  }
+  closeSettingsPin();        // close the small PIN box
+  openUserChange();          // open the professional modal
 };
+
 
 
 
