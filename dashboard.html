@@ -319,7 +319,7 @@
 </div>
 
 <!-- Change Gate Password Modal -->
-<div id="gateChangeBackdrop" class="modal-backdrop" style="display:none">
+<div id="gateChangeBackdrop" class="modal-backdrop" style="display:none; z-index:3000">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="gateChangeTitle">
     <header>
       <div id="gateChangeTitle">Change dashboard password</div>
@@ -889,25 +889,6 @@ async function changePin(role, oldPin, newPin){
     }
   };
   $("gatePin").addEventListener("keydown",(e)=>{ if(e.key==="Enter") $("gateBtn").click(); });
-
-
-  $("gateChangeBtn").onclick = async () => {
-  // You must be authenticated to call /api/auth/change.
-  // If not yet logged in, temporarily log in with the current gate password to get a token.
-  const oldP = prompt(t("enterOldGate")); if (oldP === null) return;
-  const newP = prompt(t("enterNewGate")); if (newP === null || !newP.trim()) return;
-
-  try {
-    // If we don't have a token, get one via dashboard login using the old password.
-    if (!AUTH_TOKEN) {
-      await loginWithPin("gate", oldP.trim()); // obtains token with scope "dashboard"
-    }
-    await changePin("gate", oldP.trim(), newP.trim());
-    alert(t("changedOk"));
-  } catch (e) {
-    alert(t("wrongOld"));
-  }
-};
 
 
 // ===== Change Gate Password Modal =====
