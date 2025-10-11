@@ -98,6 +98,18 @@ def require_scopes(*allowed: str):
     return _inner
 
 
+def require_any_scope(allowed: list[str]):
+    def _inner(creds: HTTPAuthorizationCredentials = Depends(bearer)) -> str:
+        try:
+            payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALG])
+        except JWTError:
+            raise HTTPException(401, "Invalid or expired token")
+        scope = payload.get("scope")
+        if scope not in allowed:
+            raise HTTPException(403, "Forbidden")
+        return scope
+    return _inner
+
 
 def require_scope(required: str):
     """
@@ -579,15 +591,10 @@ async def mirror_rtu_server_manager():
 # ================== Web API & Dashboard ==================
 
 # ---------- NEW: Auth endpoints ----------
+"""
 @app.post("/api/auth/login")
 def auth_login(body: Dict[str, str] = Body(...)):
-    """
-    Accepts legacy & new shapes:
-      - {"scope":"gate"|"user"|"admin", "pin":"..."}
-      - {"role":"gate"|"user"|"admin", "pin":"..."}
-      - {"who":"dashboard"|"user"|"admin", "password":"..."}  # canonical
-    'gate' is an alias for 'dashboard'.
-    """
+
     body = body or {}
     # extract 'who'
     who = body.get("who")
@@ -611,18 +618,35 @@ def auth_login(body: Dict[str, str] = Body(...)):
         raise HTTPException(401, "Invalid credentials")
 
     return {"token": issue_token(scope=who), "scope": who}
+"""
 
+
+@app.post("/api/auth/login")
+def auth_login(body: Dict[str, str] = Body(...)):
+    # accept both styles
+    who = (body or {}).get("who") or (body or {}).get("scope")
+    pwd = (body or {}).get("password") or (body or {}).get("pin")
+    if who == "gate":
+        who = "dashboard"
+    if who not in ("dashboard", "user", "admin"):
+        raise HTTPException(400, "who must be one of: dashboard, user, admin")
+
+    db = SessionLocal()
+    row = db.get(Secret, f"pin.{who}")
+    if not row or not argon2.verify(pwd or "", row.value):
+        raise HTTPException(401, "Invalid credentials")
+
+    return {"token": issue_token(scope=who), "scope": who}
+
+
+
+"""
 @app.post("/api/auth/change")
 def auth_change(
     body: Dict[str, str] = Body(...),
     _scope: str = Depends(require_scopes("user", "dashboard"))
 ):
-    """
-    Accepts legacy & new shapes:
-      - {"who":"dashboard"|"user", "old_password":"...", "new_password":"..."}  # canonical
-      - {"role":"gate"|"user", "old_pin":"...", "new_pin":"..."} (gate->dashboard)
-    Admin pin is FIXED and cannot be changed here.
-    """
+
     body = body or {}
 
     who = body.get("who")
@@ -652,17 +676,46 @@ def auth_change(
     db.add(row)
     db.commit()
     return {"ok": True}
+"""
+
+@app.post("/api/auth/change")
+def auth_change(
+    body: Dict[str, str] = Body(...),
+    _scope: str = Depends(require_any_scope(["dashboard", "user", "admin"]))
+):
+    """
+    Body (accepts either pair of names):
+      { who: "dashboard"|"user", old_password|old_pin: "...", new_password|new_pin: "..." }
+    Admin pin is fixed and not changeable here.
+    """
+    who = (body or {}).get("who") or (body or {}).get("role")  # accept legacy 'role'
+    oldp = (body or {}).get("old_password") or (body or {}).get("old_pin")
+    newp = (body or {}).get("new_password") or (body or {}).get("new_pin")
+
+    if who == "gate":  # normalize
+        who = "dashboard"
+
+    if who not in ("dashboard", "user"):
+        raise HTTPException(400, "Only 'dashboard' or 'user' pins are changeable")
+    if not newp or len(newp) < 6 or len(newp) > 64:
+        raise HTTPException(400, "new_password must be 6..64 chars")
+
+    db = SessionLocal()
+    key = f"pin.{who}"
+    row = db.get(Secret, key)
+    if not row or not argon2.verify(oldp or "", row.value):
+        raise HTTPException(401, "Old password is incorrect")
+
+    row.value = argon2.hash(newp)
+    row.updated_at = datetime.utcnow()
+    db.add(row); db.commit()
+    return {"ok": True}
 
 
+"""
 @app.post("/api/auth/reset")
 def auth_reset(_scope: str = Depends(require_scopes("admin"))):
-    """
-    Resets all pins to factory defaults:
-      dashboard = AT-MOD-01
-      user      = AT-User-1
-      admin     = AT1959
-    Admin token required.
-    """
+
     db = SessionLocal()
     defaults = {
         "pin.dashboard": "AT-MOD-01",
@@ -681,6 +734,25 @@ def auth_reset(_scope: str = Depends(require_scopes("admin"))):
             db.add(row)
     db.commit()
     return {"ok": True}
+"""
+
+@app.post("/api/auth/reset")
+def auth_reset(_=Depends(require_any_scope(["dashboard","user","admin"]))):
+    db = SessionLocal()
+    defaults = {
+        "pin.dashboard": "AT-MOD-01",
+        "pin.user":      "AT-User-1",
+        "pin.admin":     "AT1959",   # fixed
+    }
+    for k, v in defaults.items():
+        row = db.get(Secret, k)
+        if row:
+            row.value = argon2.hash(v); row.updated_at = datetime.utcnow(); db.add(row)
+        else:
+            db.add(Secret(key=k, value=argon2.hash(v)))
+    db.commit()
+    return {"ok": True}
+
 
 
 

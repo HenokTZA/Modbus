@@ -672,34 +672,35 @@
   }
 
   async function loginWithPin(scope, pin){
-    // scope: "gate" | "user" | "admin"
-    const r = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ scope, pin })
-    });
-    if (!r.ok) {
-      const j = await r.json().catch(()=>({}));
-      throw new Error(j.detail || "Login failed");
-    }
-    const j = await r.json();
-    // backend should return { token, scope }
-    setAuth(j.token, j.scope || scope);
-    return j;
+  // Map UI scopes to backend 'who'
+  const who = (scope === "gate") ? "dashboard" : scope;  // "user" or "admin" unchanged
+  const r = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ who, password: pin })
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(()=>({}));
+    throw new Error(j.detail || "Login failed");
   }
+  const j = await r.json();
+  setAuth(j.token, j.scope || who);
+  return j;
+}
 
-  async function changePin(role, oldPin, newPin){
-    // role: "gate" | "user"  (admin is fixed on server; do not allow here)
-    const r = await apiRequest("/api/auth/change", {
-      method: "POST",
-      body: JSON.stringify({ role, old_pin: oldPin, new_pin: newPin })
-    });
-    if (!r.ok) {
-      const j = await r.json().catch(()=>({}));
-      throw new Error(j.detail || "Change failed");
-    }
-    return r.json();
+async function changePin(role, oldPin, newPin){
+  const who = (role === "gate") ? "dashboard" : role; // "user" allowed too
+  const r = await apiRequest("/api/auth/change", {
+    method: "POST",
+    body: JSON.stringify({ who, old_password: oldPin, new_password: newPin })
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(()=>({}));
+    throw new Error(j.detail || "Change failed");
   }
+  return r.json();
+}
+
 
   async function resetAllPins(){
     const r = await apiRequest("/api/auth/reset", { method: "POST" });
@@ -851,14 +852,24 @@
   $("gatePin").addEventListener("keydown",(e)=>{ if(e.key==="Enter") $("gateBtn").click(); });
 
 
-  $("gateChangeBtn").onclick = async ()=>{
-  const oldP = prompt(t("enterOldGate")); if (oldP===null) return;
-  const newP = prompt(t("enterNewGate")); if (newP===null || !newP.trim()) return;
+  $("gateChangeBtn").onclick = async () => {
+  // You must be authenticated to call /api/auth/change.
+  // If not yet logged in, temporarily log in with the current gate password to get a token.
+  const oldP = prompt(t("enterOldGate")); if (oldP === null) return;
+  const newP = prompt(t("enterNewGate")); if (newP === null || !newP.trim()) return;
+
   try {
+    // If we don't have a token, get one via dashboard login using the old password.
+    if (!AUTH_TOKEN) {
+      await loginWithPin("gate", oldP.trim()); // obtains token with scope "dashboard"
+    }
     await changePin("gate", oldP.trim(), newP.trim());
     alert(t("changedOk"));
-  } catch(e){ alert(t("wrongOld")); }
+  } catch (e) {
+    alert(t("wrongOld"));
+  }
 };
+
 
 
 
@@ -921,6 +932,7 @@ $("btnResetPwNo").onclick = ()=>{
     toast(t("saveFail"));
   }
 };
+
 
 
   /* ==================== TOP BAR FROM /api/settings ==================== */
@@ -1102,20 +1114,23 @@ $("btnResetPwNo").onclick = ()=>{
 };
 const closeSettingsPin = ()=>{ $("pinBackdrop").style.display="none"; };
 
-$("pinChangeBtn").onclick = async ()=>{
+$("pinChangeBtn").onclick = async () => {
   if (CURRENT_SETTINGS_ROLE !== 'user') return;
-  const oldP = prompt(t("enterOldUser"));
-  if (oldP === null) return;
-  const newP = prompt(t("enterNewUser"));
-  if (newP === null || !newP.trim()) return;
+  const oldP = prompt(t("enterOldUser")); if (oldP === null) return;
+  const newP = prompt(t("enterNewUser")); if (newP === null || !newP.trim()) return;
 
   try {
-    await changePin("user", oldP.trim(), newP.trim());  // server-side change
+    // Ensure we have any valid token; if not, login as user with old password
+    if (!AUTH_TOKEN || AUTH_SCOPE === "dashboard") {
+      await loginWithPin("user", oldP.trim()); // get token with 'user' scope
+    }
+    await changePin("user", oldP.trim(), newP.trim());
     alert(t("changedOk"));
   } catch (e) {
     alert(t("wrongOld"));
   }
 };
+
 
 
 $("pinOk").onclick = async ()=>{
