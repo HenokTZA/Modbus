@@ -318,6 +318,35 @@
   </div>
 </div>
 
+<!-- Change Gate Password Modal -->
+<div id="gateChangeBackdrop" class="modal-backdrop" style="display:none">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="gateChangeTitle">
+    <header>
+      <div id="gateChangeTitle">Change dashboard password</div>
+      <button id="gateChangeClose" class="icon-btn" title="Close">✖</button>
+    </header>
+    <div class="content">
+      <div class="grid">
+        <div>
+          <label id="i.enterOldGate_lbl" for="oldGatePw">Current password</label>
+          <input id="oldGatePw" type="password" placeholder="••••" maxlength="64" autocomplete="current-password">
+        </div>
+        <div>
+          <label id="i.enterNewGate_lbl" for="newGatePw">New password</label>
+          <input id="newGatePw" type="password" placeholder="New password" maxlength="64" autocomplete="new-password">
+        </div>
+      </div>
+      <p class="hint" id="gateChangeHint">Tip: choose at least 4 characters.</p>
+      <div class="pin-err" id="gateChangeErr" style="min-height:18px"></div>
+      <div class="actions">
+        <button id="gateChangeCancel" class="btn"><span id="i.cancel">Cancel</span></button>
+        <button id="gateChangeSave" class="btn primary"><span id="i.save">Save</span></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
 <!-- Logout Confirm Modal -->
 <div id="logoutBackdrop" class="modal-backdrop">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="logoutTitle">
@@ -429,6 +458,8 @@
   /* ==================== I18N STRINGS ==================== */
   const I18N = {
     es: {
+      gateChangeTitle: "Cambiar contraseña del panel",
+      cancel: "Cancelar",
       logoutTitle: "¿Cerrar sesión?",
       logoutMsg: "Se cerrará la sesión actual y volverá a la pantalla de acceso.",     
       logout: "Salir",
@@ -533,6 +564,8 @@
       }
     },
     en: {
+      gateChangeTitle: "Change dashboard password",
+      cancel: "Cancel",
       logoutTitle: "Log out?",
       logoutMsg: "You’ll be signed out and returned to the access screen.",
       logout: "Logout",
@@ -801,6 +834,12 @@ async function changePin(role, oldPin, newPin){
     $("i.no").textContent       = t("no");
     $("logoutTitle").textContent = t("logoutTitle");
     $("logoutMsg").textContent   = t("logoutMsg");
+ 
+    $("gateChangeTitle").textContent = t("gateChangeTitle");
+    $("i.enterOldGate_lbl").textContent = t("enterOldGate");
+    $("i.enterNewGate_lbl").textContent = t("enterNewGate");
+    $("i.cancel").textContent = t("cancel");
+    $("i.save").textContent = t("save");
 
 
     // Set the dynamic PIN title according to current role, if modal is open
@@ -870,6 +909,59 @@ async function changePin(role, oldPin, newPin){
   }
 };
 
+
+// ===== Change Gate Password Modal =====
+const openGateChange = () => {
+  $("gateChangeErr").textContent = "";
+  $("oldGatePw").value = "";
+  $("newGatePw").value = "";
+  $("gateChangeBackdrop").style.display = "flex";
+  setTimeout(() => $("oldGatePw").focus(), 30);
+};
+const closeGateChange = () => { $("gateChangeBackdrop").style.display = "none"; };
+
+// Open from the gate screen (works before login)
+$("gateChangeBtn").onclick = openGateChange;
+
+// Close handlers
+$("gateChangeClose").onclick = closeGateChange;
+$("gateChangeCancel").onclick = closeGateChange;
+$("gateChangeBackdrop").addEventListener("click", (e) => {
+  if (e.target === $("gateChangeBackdrop")) closeGateChange();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && $("gateChangeBackdrop").style.display === "flex") closeGateChange();
+});
+
+// Submit handler
+async function submitGateChange(){
+  const oldP = $("oldGatePw").value.trim();
+  const newP = $("newGatePw").value.trim();
+  const err = $("gateChangeErr");
+  err.textContent = "";
+  if (!oldP || !newP) { err.textContent = LANG==="es" ? "Complete ambos campos." : "Please fill both fields."; return; }
+  if (newP.length < 4) { err.textContent = LANG==="es" ? "La nueva contraseña es muy corta." : "New password is too short."; return; }
+
+  try {
+    // If not authenticated, temporarily login with current dashboard password to obtain a token
+    if (!AUTH_TOKEN) {
+      await loginWithPin("gate", oldP); // scope "dashboard"
+    }
+    await changePin("gate", oldP, newP); // POST /api/auth/change
+    // Security: drop token so user must login with the new password
+    setAuth(null, null);
+    closeGateChange();
+    showGate();
+    $("gatePin").value = "";
+    toast(t("changedOk"));
+  } catch (e) {
+    err.textContent = t("wrongOld");
+  }
+}
+
+$("gateChangeSave").onclick = submitGateChange;
+$("newGatePw").addEventListener("keydown", (e)=>{ if(e.key==="Enter") submitGateChange(); });
+$("oldGatePw").addEventListener("keydown", (e)=>{ if(e.key==="Enter") submitGateChange(); });
 
 
 
