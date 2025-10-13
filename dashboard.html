@@ -60,6 +60,18 @@
 .btn.primary.danger{background:#8a2430;border-color:#5a1a22}
 .btn.primary.danger:hover{background:#a92c3a}
 
+/* Password toggle */
+.pw-wrap{position:relative;width:100%;flex:1;display:flex;align-items:center}
+.pw-wrap > input{width:100%;padding-right:38px} /* room for the button */
+.pw-toggle{
+  position:absolute;right:8px;top:50%;transform:translateY(-50%);
+  border:1px solid #223;background:#0f1830;color:#9fc3ff;
+  border-radius:8px;width:28px;height:28px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center
+}
+.pw-toggle:hover{background:#13213d}
+.pw-toggle svg{width:18px;height:18px}
+
 
   .top-row{grid-column:1/-1;display:grid;grid-template-columns:repeat(3,minmax(280px,1fr));gap:16px}
   .kv{display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center}
@@ -1404,6 +1416,51 @@ document.addEventListener("keydown", (e) => {
   finally{ btn.disabled=false; btn.textContent=original; }
 };
 
+// ===== Password show/hide toggles =====
+const EYE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+  stroke-linecap="round" stroke-linejoin="round">
+  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const EYE_OFF = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+  stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 3l18 18"/><path d="M1 12s4-8 11-8a12 12 0 0 1 6.3 1.8"/>
+  <path d="M23 12s-4 8-11 8a12 12 0 0 1-6.3-1.8"/>
+  <path d="M9.5 9.5a3 3 0 0 0 4.95 3.05"/></svg>`;
+
+function attachPwToggle(input){
+  if(!input || input.dataset.pwBound) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'pw-wrap';
+  input.parentNode.insertBefore(wrap, input);
+  wrap.appendChild(input);
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'pw-toggle';
+  const lbl = (show)=> (LANG==='es' ? (show?'Mostrar contraseña':'Ocultar contraseña')
+                                     : (show?'Show password':'Hide password'));
+  btn.setAttribute('aria-label', lbl(true));
+  btn.innerHTML = EYE;
+
+  btn.addEventListener('click', ()=>{
+    const hidden = input.type === 'password';
+    input.type = hidden ? 'text' : 'password';
+    btn.innerHTML = hidden ? EYE_OFF : EYE;
+    btn.setAttribute('aria-label', lbl(!hidden));
+    input.focus();
+  });
+
+  wrap.appendChild(btn);
+  input.dataset.pwBound = '1';
+}
+
+function initPasswordToggles(){
+  [
+    'gatePin',        // gate login
+    'settingsPin',    // PIN modal
+    'oldGatePw','newGatePw',   // change gate password
+    'oldUserPw','newUserPw'    // change user settings password
+  ].forEach(id => attachPwToggle(document.getElementById(id)));
+}
 
 
 
@@ -1430,6 +1487,7 @@ document.addEventListener("keydown", (e) => {
   $("gateBtn").textContent = t("gateEnter");
   await checkGate();                    // will show the gate if not authed
 if (AUTH_TOKEN) { await fillSettings(); }
+  initPasswordToggles();
   mainTick();
 });
  
