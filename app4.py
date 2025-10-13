@@ -326,17 +326,6 @@ def _copy_hr_values(src: List[int], dst: ModbusSequentialDataBlock, start_addr: 
 
 
 async def rebuild_datastores_and_context():
-    """
-    Rebuild in-memory datastores and Modbus contexts.
-
-    - store0: 0-based HR view  (for dashboard etc.)
-    - store1: 1-based HR view  (for Modbus clients)
-    - tcp_context serves:
-        * local_units.unit0_id -> store0
-        * local_units.unit1_id -> store1
-        * mirror_rtu.slave_id  -> store1   (NEW: let TCP also accept mirror's ID)
-    - mirror_context serves only mirror_rtu.slave_id -> store1 (serial mirror)
-    """
     global store0, store1, tcp_context, mirror_context
 
     hr_start = S()["hr"]["start"]
@@ -515,76 +504,7 @@ async def poll_upstream_and_update_cache():
     finally:
         await _safe_close(client)
 
-"""
-async def tcp_server_manager():
-    current_port = None
-    current_ctx = None
-    server_task: asyncio.Task | None = None
 
-    async def _stop_task():
-        nonlocal server_task
-        if server_task and not server_task.done():
-            server_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await server_task
-        server_task = None
-        await asyncio.sleep(0.9)  # brief pause so OS releases the socket
-
-    async def _start(port: int, ctx: ModbusServerContext) -> asyncio.Task:
-        async def run():
-            await StartAsyncTcpServer(
-                context=ctx,
-                address=("0.0.0.0", port),
-                ignore_missing_slaves=True,
-            )
-        t = asyncio.create_task(run(), name=f"mbtcp:{port}")
-
-        def _dbg(task: asyncio.Task):
-            if task.cancelled():
-                return
-            exc = task.exception()
-            if exc:
-                print(f"[TCP] task crashed: {exc!r}")
-
-        t.add_done_callback(_dbg)
-        return t
-
-    try:
-        while True:
-            desired_port = S()["tcp"]["port"]
-            desired_ctx = tcp_context
-
-            needs_restart = (
-                desired_port != current_port or
-                desired_ctx is not current_ctx or
-                (server_task is None) or
-                server_task.done()
-            )
-
-            if needs_restart:
-                await _stop_task()
-                current_port = desired_port
-                current_ctx = desired_ctx
-
-                last_err = None
-                for attempt in range(1, 6):
-                    try:
-                        server_task = await _start(current_port, current_ctx)
-                        print(f"[TCP] listening on 0.0.0.0:{current_port}")
-                        last_err = None
-                        break
-                    except Exception as e:
-                        last_err = e
-                        print(f"[TCP] start attempt {attempt} failed: {e!r}")
-                        await asyncio.sleep(0.3 * attempt)
-
-                if last_err is not None:
-                    print(f"[TCP] giving up for now: {last_err!r}")
-
-            await asyncio.sleep(0.5)
-    finally:
-        await _stop_task()
-"""
 
 async def tcp_server_manager():
     """Modbus TCP server: restart only when the TCP port actually changes."""
@@ -649,106 +569,6 @@ async def tcp_server_manager():
             await asyncio.sleep(0.5)
     finally:
         await _stop_task()
-
-
-"""
-async def mirror_rtu_server_manager():
-
-    global mirror_reload_event
-
-    current_serial = {}
-    current_ctx = None
-    server_task: asyncio.Task | None = None
-
-    async def _stop_task():
-        nonlocal server_task
-        if server_task and not server_task.done():
-            server_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await server_task
-        server_task = None
-        # give the OS/driver a breath so the tty can be re-locked
-        await asyncio.sleep(0.2)
-
-    async def _start(cfg: dict, ctx: ModbusServerContext) -> asyncio.Task:
-        async def run():
-            await StartAsyncSerialServer(
-                context=ctx,
-                framer=FramerType.RTU,
-                port=MIRROR_CH2_PORT,
-                baudrate=int(cfg.get("baudrate", 9600)),
-                parity=str(cfg.get("parity", "N")),
-                stopbits=int(cfg.get("stopbits", 1)),
-                bytesize=int(cfg.get("bytesize", 8)),
-                timeout=1,
-            )
-
-        t = asyncio.create_task(run(), name=f"mbserial:{MIRROR_CH2_PORT}")
-
-        def _dbg(task: asyncio.Task):
-            if task.cancelled():
-                return
-            exc = task.exception()
-            if exc:
-                print(f"[RTU mirror] task crashed: {exc!r}")
-
-        t.add_done_callback(_dbg)
-        return t
-
-    try:
-        while True:
-            cfg = S().get("mirror_rtu", {}) or {}
-            watched = {
-                "slave_id": cfg.get("slave_id"),
-                "baudrate": int(cfg.get("baudrate", 9600)),
-                "parity":   str(cfg.get("parity", "N")),
-                "stopbits": int(cfg.get("stopbits", 1)),
-                "bytesize": int(cfg.get("bytesize", 8)),
-            }
-            desired_ctx = mirror_context
-
-            force = False
-            if mirror_reload_event.is_set():
-                mirror_reload_event.clear()
-                force = True
-
-            needs_restart = force or (
-                watched != current_serial or
-                desired_ctx is not current_ctx or
-                (server_task is None) or
-                server_task.done()
-            )
-
-            if needs_restart:
-                await _stop_task()
-
-                current_serial = watched
-                current_ctx = desired_ctx
-
-                # retry loop to avoid "tty in use" races
-                last_err = None
-                for attempt in range(1, 6):  # 5 tries
-                    try:
-                        server_task = await _start(cfg, current_ctx)
-                        print(
-                            f"[RTU mirror] {MIRROR_CH2_PORT} {watched['baudrate']} {watched['parity']} "
-                            f"{watched['stopbits']} {watched['bytesize']} | slave_id={watched['slave_id']} (restarted)"
-                        )
-                        last_err = None
-                        break
-                    except Exception as e:
-                        last_err = e
-                        print(f"[RTU mirror] start attempt {attempt} failed: {e!r}")
-                        await asyncio.sleep(0.4 * attempt)  # backoff: 0.4s,0.8s,1.2s,...
-
-                if last_err is not None:
-                    # give up but keep looping; we'll try again next cycle
-                    print(f"[RTU mirror] giving up for now: {last_err!r}")
-
-            await asyncio.sleep(0.5)
-    finally:
-        await _stop_task()
-"""
 
 
 async def mirror_rtu_server_manager():
@@ -875,43 +695,7 @@ def auth_login(body: Dict[str, str] = Body(...)):
 
 
 
-"""
-@app.post("/api/auth/change")
-def auth_change(
-    body: Dict[str, str] = Body(...),
-    _scope: str = Depends(require_scopes("user", "dashboard"))
-):
 
-    body = body or {}
-
-    who = body.get("who")
-    if not who:
-        who = body.get("role")
-        if who == "gate":
-            who = "dashboard"
-
-    oldp = body.get("old_password")
-    newp = body.get("new_password")
-    if oldp is None and newp is None:
-        oldp = body.get("old_pin")
-        newp = body.get("new_pin")
-
-    if who not in ("dashboard", "user"):
-        raise HTTPException(400, "Only dashboard or user pins are changeable")
-    if not newp or len(newp) < 6 or len(newp) > 64:
-        raise HTTPException(400, "new_password must be 6..64 chars")
-
-    db = SessionLocal()
-    key = f"pin.{who}"
-    row = db.get(Secret, key)
-    if not row or not argon2.verify(oldp or "", row.value):
-        raise HTTPException(401, "Old password is incorrect")
-
-    row.value = argon2.hash(newp)
-    db.add(row)
-    db.commit()
-    return {"ok": True}
-"""
 
 @app.post("/api/auth/change")
 def auth_change(
@@ -947,29 +731,6 @@ def auth_change(
     return {"ok": True}
 
 
-"""
-@app.post("/api/auth/reset")
-def auth_reset(_scope: str = Depends(require_scopes("admin"))):
-
-    db = SessionLocal()
-    defaults = {
-        "pin.dashboard": "AT-MOD-01",
-        "pin.user":      "AT-User-1",
-        "pin.admin":     "AT1959",
-    }
-    now = datetime.utcnow()
-    for key, plain in defaults.items():
-        row = db.get(Secret, key)
-        if not row:
-            row = Secret(key=key, value=argon2.hash(plain), updated_at=now)
-            db.add(row)
-        else:
-            row.value = argon2.hash(plain)
-            row.updated_at = now
-            db.add(row)
-    db.commit()
-    return {"ok": True}
-"""
 
 @app.post("/api/auth/reset")
 def auth_reset(_=Depends(require_any_scope(["dashboard","user","admin"]))):
@@ -1135,152 +896,6 @@ async def get_settings():
     }
     return JSONResponse(s)
 
-"""
-@app.put("/api/settings")
-async def put_settings(payload: Dict[str, Any] = Body(...), _=Depends(require_scope("admin"))):
-
-    payload = payload or {}
-
-    # ---- sanitize upstream
-    if isinstance(payload.get("upstream"), dict):
-        up_in = payload["upstream"]
-        payload["upstream"] = {}
-        if "device_unit_id" in up_in:
-            payload["upstream"]["device_unit_id"] = int(up_in["device_unit_id"])
-        if "poll_period_s" in up_in:
-            payload["upstream"]["poll_period_s"] = float(up_in["poll_period_s"])
-
-    # ---- sanitize mirror_rtu
-    if isinstance(payload.get("mirror_rtu"), dict):
-        mr_in = payload["mirror_rtu"]
-        mr_out: Dict[str, Any] = {}
-        if "slave_id" in mr_in:
-            mr_out["slave_id"] = int(mr_in["slave_id"])
-        for k in ("baudrate", "stopbits", "bytesize"):
-            if k in mr_in: mr_out[k] = int(mr_in[k])
-        if "parity" in mr_in: mr_out["parity"] = str(mr_in["parity"])
-        payload["mirror_rtu"] = mr_out  # no 'port'
-
-    async with SETTINGS_LOCK:
-        current_on_disk = load_settings_from_disk()
-
-        def deep_merge(dst, src):
-            for k, v in (src or {}).items():
-                if isinstance(v, dict) and isinstance(dst.get(k), dict):
-                    deep_merge(dst[k], v)
-                else:
-                    dst[k] = v
-
-        prev = json.loads(json.dumps(current_on_disk))
-        deep_merge(current_on_disk, payload)
-
-        # purge unsupported keys
-        if isinstance(current_on_disk.get("upstream"), dict):
-            for k in ("port", "baudrate", "parity", "stopbits", "bytesize"):
-                current_on_disk["upstream"].pop(k, None)
-        if isinstance(current_on_disk.get("mirror_rtu"), dict):
-            current_on_disk["mirror_rtu"].pop("port", None)
-
-        try:
-            await save_settings_to_disk(current_on_disk)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to save settings: {e}")
-
-        SETTINGS.clear()
-        SETTINGS.update(current_on_disk)
-
-    prev_mirror_slave = (prev.get("mirror_rtu", {}) or {}).get("slave_id")
-    new_mirror_slave  = (S().get("mirror_rtu", {}) or {}).get("slave_id")
-    need_rebuild = (
-        (prev.get("hr", {}) or {}) != (S().get("hr", {}) or {}) or
-        (prev.get("local_units", {}) or {}) != (S().get("local_units", {}) or {}) or
-        prev_mirror_slave != new_mirror_slave
-    )
-    if need_rebuild:
-        await rebuild_datastores_and_context()
-
-    return JSONResponse({"ok": True})
-"""
-
-"""
-@app.put("/api/settings")
-async def put_settings(payload: Dict[str, Any] = Body(...), _=Depends(require_scope("admin"))):
-    payload = payload or {}
-
-    # ---- sanitize upstream
-    if isinstance(payload.get("upstream"), dict):
-        up_in = payload["upstream"]
-        payload["upstream"] = {}
-        if "device_unit_id" in up_in:
-            payload["upstream"]["device_unit_id"] = int(up_in["device_unit_id"])
-        if "poll_period_s" in up_in:
-            payload["upstream"]["poll_period_s"] = float(up_in["poll_period_s"])
-
-    # ---- sanitize mirror_rtu
-    if isinstance(payload.get("mirror_rtu"), dict):
-        mr_in = payload["mirror_rtu"]
-        mr_out: Dict[str, Any] = {}
-        if "slave_id" in mr_in:
-            mr_out["slave_id"] = int(mr_in["slave_id"])
-        for k in ("baudrate", "stopbits", "bytesize"):
-            if k in mr_in:
-                mr_out[k] = int(mr_in[k])
-        if "parity" in mr_in:
-            mr_out["parity"] = str(mr_in["parity"])
-        payload["mirror_rtu"] = mr_out  # no 'port'
-
-    async with SETTINGS_LOCK:
-        current_on_disk = load_settings_from_disk()
-
-        def deep_merge(dst, src):
-            for k, v in (src or {}).items():
-                if isinstance(v, dict) and isinstance(dst.get(k), dict):
-                    deep_merge(dst[k], v)
-                else:
-                    dst[k] = v
-
-        prev = json.loads(json.dumps(current_on_disk))
-        deep_merge(current_on_disk, payload)
-
-        # purge unsupported keys
-        if isinstance(current_on_disk.get("upstream"), dict):
-            for k in ("port", "baudrate", "parity", "stopbits", "bytesize"):
-                current_on_disk["upstream"].pop(k, None)
-        if isinstance(current_on_disk.get("mirror_rtu"), dict):
-            current_on_disk["mirror_rtu"].pop("port", None)
-
-        try:
-            await save_settings_to_disk(current_on_disk)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to save settings: {e}")
-
-        SETTINGS.clear()
-        SETTINGS.update(current_on_disk)
-
-    # ----- detect mirror changes and poke the mirror manager
-    prev_mr = (prev.get("mirror_rtu", {}) or {})
-    new_mr  = (S().get("mirror_rtu", {}) or {})
-
-    prev_mirror_slave = prev_mr.get("slave_id")
-    new_mirror_slave  = new_mr.get("slave_id")
-
-    # If ANY mirror serial parameter (incl. slave_id) changed, poke the server manager
-    serial_fields = ("slave_id", "baudrate", "parity", "stopbits", "bytesize")
-    mirror_changed = any(prev_mr.get(k) != new_mr.get(k) for k in serial_fields)
-    if mirror_changed:
-        mirror_reload_event.set()
-
-    # ----- rebuild contexts when hr window / units / mirror slave changed
-    need_rebuild = (
-        (prev.get("hr", {}) or {}) != (S().get("hr", {}) or {}) or
-        (prev.get("local_units", {}) or {}) != (S().get("local_units", {}) or {}) or
-        prev_mirror_slave != new_mirror_slave
-    )
-    if need_rebuild:
-        await rebuild_datastores_and_context()
-
-    return JSONResponse({"ok": True})
-"""
 
 
 @app.put("/api/settings")
