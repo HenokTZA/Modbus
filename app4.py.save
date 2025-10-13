@@ -322,7 +322,45 @@ def _hr_block1() -> ModbusSequentialDataBlock:
 def _copy_hr_values(src: List[int], dst: ModbusSequentialDataBlock, start_addr: int):
     dst.setValues(start_addr, src)
 
+"""
+async def rebuild_datastores_and_context():
+    global store0, store1, tcp_context, mirror_context
 
+    hr_start = S()["hr"]["start"]
+    hr_count = S()["hr"]["count"]
+    u0 = S()["local_units"]["unit0_id"]
+    u1 = S()["local_units"]["unit1_id"]
+    mirror_id = (S().get("mirror_rtu", {}) or {}).get("slave_id", u1)
+
+    # snapshot old data
+    old0, old1 = [], []
+    if store0 and store1:
+        with contextlib.suppress(Exception):
+            old0 = _hr_block0().getValues(0, hr_count)
+        with contextlib.suppress(Exception):
+            old1 = _hr_block1().getValues(1, hr_count)
+
+    # new stores
+    new0 = make_store0(hr_count)
+    new1 = make_store1(hr_count)
+
+    # copy overlap
+    if old0:
+        _copy_hr_values(old0[:hr_count], new0.store["h"], 0)
+    if old1:
+        _copy_hr_values(old1[:hr_count], new1.store["h"], 1)
+
+    # swap + build contexts
+    async with HR_LOCK:
+        store0 = new0
+        store1 = new1
+
+        # TCP: unit0 (0-based) + unit1 (1-based)
+        tcp_context = ModbusServerContext(slaves={u0: store0, u1: store1}, single=False)
+
+        # CH2: ONLY mirror_id (1-based view)
+        mirror_context = ModbusServerContext(slaves={mirror_id: store1}, single=False)
+"""
 
 
 async def rebuild_datastores_and_context():
@@ -521,6 +559,52 @@ async def tcp_server_manager():
     current_ctx = None
     server_task: asyncio.Task | None = None
 
+    async def _start(port: int, ctx: ModbusServerContext) -> asyncio.Task:
+        async def run():
+            await StartAsyncTcpServer(
+                context=ctx,
+                address=("0.0.0.0", port),
+                ignore_missing_slaves=True,
+            )
+        return asyncio.create_task(run(), name=f"mbtcp:{port}")
+
+    try:
+        while True:
+            desired_port = S()["tcp"]["port"]
+            desired_ctx = tcp_context
+
+            needs_restart = (
+                desired_port != current_port or
+                desired_ctx is not current_ctx or
+                (server_task is not None and server_task.done())
+            )
+
+            if needs_restart:
+                if server_task and not server_task.done():
+                    server_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await server_task
+
+                current_port = desired_port
+                current_ctx = desired_ctx
+                server_task = await _start(current_port, current_ctx)
+                print(f"[TCP] listening on 0.0.0.0:{current_port}")
+
+            await asyncio.sleep(0.5)
+    finally:
+        if server_task and not server_task.done():
+            server_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await server_task
+"""
+
+
+"""
+async def tcp_server_manager():
+    current_port = None
+    current_ctx = None
+    server_task: asyncio.Task | None = None
+
     async def _stop_task():
         nonlocal server_task
         if server_task and not server_task.done():
@@ -586,74 +670,74 @@ async def tcp_server_manager():
         await _stop_task()
 """
 
-async def tcp_server_manager():
-    """Modbus TCP server: restart only when the TCP port actually changes."""
-    current_port = None
+
+"""
+async def mirror_rtu_server_manager():
+    global mirror_reload_event
+    current_serial = {}
+    current_ctx = None
     server_task: asyncio.Task | None = None
 
-    async def _stop_task():
-        nonlocal server_task
+    async def _start(cfg: dict, ctx: ModbusServerContext) -> asyncio.Task:
+        async def run():
+            await StartAsyncSerialServer(
+                context=ctx,
+                framer=FramerType.RTU,
+                port=MIRROR_CH2_PORT,
+                baudrate=cfg["baudrate"],
+                parity=cfg["parity"],
+                stopbits=cfg["stopbits"],
+                bytesize=cfg["bytesize"],
+                timeout=1
+            )
+        return asyncio.create_task(run(), name=f"mbserial:{MIRROR_CH2_PORT}")
+
+    try:
+        while True:
+            cfg = S().get("mirror_rtu", {}) or {}
+            watched = {
+                "slave_id": cfg.get("slave_id"),
+                "baudrate": cfg.get("baudrate"),
+                "parity":   cfg.get("parity"),
+                "stopbits": cfg.get("stopbits"),
+                "bytesize": cfg.get("bytesize"),
+            }
+            desired_ctx = mirror_context
+
+            needs_restart = (
+                watched != current_serial or
+                desired_ctx is not current_ctx or
+                (server_task is None) or
+                server_task.done()
+            )
+
+            if needs_restart:
+                if server_task and not server_task.done():
+                    server_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await server_task
+
+                current_serial = watched
+                current_ctx = desired_ctx
+                server_task = await _start(cfg, current_ctx)
+                print(f"[RTU mirror] {MIRROR_CH2_PORT} {cfg.get('baudrate')} {cfg.get('parity')} "
+                      f"{cfg.get('stopbits')} {cfg.get('bytesize')} | slave_id={cfg.get('slave_id')}")
+
+            await asyncio.sleep(0.5)
+    finally:
         if server_task and not server_task.done():
             server_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await server_task
-        server_task = None
-        await asyncio.sleep(0.3)  # let the OS free the socket
-
-    async def _start(port: int) -> asyncio.Task:
-        async def run():
-            await StartAsyncTcpServer(
-                context=tcp_context,                 # context is mutable; no restart needed on changes
-                address=("0.0.0.0", port),
-                ignore_missing_slaves=True,
-            )
-        t = asyncio.create_task(run(), name=f"mbtcp:{port}")
-        def _dbg(task: asyncio.Task):
-            if task.cancelled():
-                return
-            exc = task.exception()
-            if exc:
-                print(f"[TCP] task crashed: {exc!r}")
-        t.add_done_callback(_dbg)
-        return t
-
-    try:
-        while True:
-            desired_port = S()["tcp"]["port"]
-
-            needs_restart = (
-                (server_task is None) or
-                server_task.done() or
-                desired_port != current_port
-            )
-
-            if needs_restart:
-                await _stop_task()
-                current_port = desired_port
-
-                last_err = None
-                for attempt in range(1, 6):
-                    try:
-                        server_task = await _start(current_port)
-                        print(f"[TCP] listening on 0.0.0.0:{current_port}")
-                        last_err = None
-                        break
-                    except Exception as e:
-                        last_err = e
-                        print(f"[TCP] start attempt {attempt} failed: {e!r}")
-                        await asyncio.sleep(0.3 * attempt)
-
-                if last_err is not None:
-                    print(f"[TCP] giving up for now: {last_err!r}")
-
-            await asyncio.sleep(0.5)
-    finally:
-        await _stop_task()
-
-
 """
-async def mirror_rtu_server_manager():
 
+
+
+
+
+
+async def mirror_rtu_server_manager():
+    """Hot-reloadable Modbus RTU mirror on CH2 (watches slave_id + serial params) with retry/backoff."""
     global mirror_reload_event
 
     current_serial = {}
@@ -748,101 +832,6 @@ async def mirror_rtu_server_manager():
             await asyncio.sleep(0.5)
     finally:
         await _stop_task()
-"""
-
-
-async def mirror_rtu_server_manager():
-    """Modbus RTU mirror on CH2: restart only when serial params change (NOT slave_id/context)."""
-    global mirror_reload_event
-
-    current_serial = {}
-    server_task: asyncio.Task | None = None
-
-    async def _stop_task():
-        nonlocal server_task
-        if server_task and not server_task.done():
-            server_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await server_task
-        server_task = None
-        await asyncio.sleep(0.25)  # give tty driver time to release
-
-    async def _start(cfg: dict) -> asyncio.Task:
-        async def run():
-            await StartAsyncSerialServer(
-                context=mirror_context,              # context is mutable; slave_id map can change w/o restart
-                framer=FramerType.RTU,
-                port=MIRROR_CH2_PORT,
-                baudrate=int(cfg.get("baudrate", 9600)),
-                parity=str(cfg.get("parity", "N")),
-                stopbits=int(cfg.get("stopbits", 1)),
-                bytesize=int(cfg.get("bytesize", 8)),
-                timeout=1,
-            )
-        t = asyncio.create_task(run(), name=f"mbserial:{MIRROR_CH2_PORT}")
-        def _dbg(task: asyncio.Task):
-            if task.cancelled():
-                return
-            exc = task.exception()
-            if exc:
-                print(f"[RTU mirror] task crashed: {exc!r}")
-        t.add_done_callback(_dbg)
-        return t
-
-    try:
-        while True:
-            cfg = S().get("mirror_rtu", {}) or {}
-            watched_serial = {
-                "baudrate": int(cfg.get("baudrate", 9600)),
-                "parity":   str(cfg.get("parity", "N")),
-                "stopbits": int(cfg.get("stopbits", 1)),
-                "bytesize": int(cfg.get("bytesize", 8)),
-            }
-            # NOTE: slave_id is intentionally NOT part of watched_serial
-
-            # Allow a manual poke; we only honor it if serial params changed
-            force = False
-            if mirror_reload_event.is_set():
-                mirror_reload_event.clear()
-                force = True
-
-            serial_changed = (watched_serial != current_serial)
-
-            needs_restart = (
-                (server_task is None) or
-                server_task.done() or
-                serial_changed or
-                (force and serial_changed)  # only restart on force if serial actually changed
-            )
-
-            if needs_restart:
-                await _stop_task()
-
-                current_serial = watched_serial
-
-                # Retry/backoff to avoid "tty busy" errors
-                last_err = None
-                for attempt in range(1, 6):
-                    try:
-                        server_task = await _start(cfg)
-                        print(
-                            f"[RTU mirror] {MIRROR_CH2_PORT} {watched_serial['baudrate']} "
-                            f"{watched_serial['parity']} {watched_serial['stopbits']} {watched_serial['bytesize']} "
-                            f"| slave_id={(S().get('mirror_rtu') or {}).get('slave_id')} (running)"
-                        )
-                        last_err = None
-                        break
-                    except Exception as e:
-                        last_err = e
-                        print(f"[RTU mirror] start attempt {attempt} failed: {e!r}")
-                        await asyncio.sleep(0.4 * attempt)
-
-                if last_err is not None:
-                    print(f"[RTU mirror] giving up for now: {last_err!r}")
-
-            await asyncio.sleep(0.5)
-    finally:
-        await _stop_task()
 
 
 
@@ -852,8 +841,34 @@ async def mirror_rtu_server_manager():
 # ================== Web API & Dashboard ==================
 
 # ---------- NEW: Auth endpoints ----------
+"""
+@app.post("/api/auth/login")
+def auth_login(body: Dict[str, str] = Body(...)):
 
+    body = body or {}
+    # extract 'who'
+    who = body.get("who")
+    if not who:
+        who = body.get("scope") or body.get("role")
+        if who == "gate":
+            who = "dashboard"
+    # extract password
+    pwd = body.get("password")
+    if pwd is None:
+        pwd = body.get("pin")
 
+    if who not in ("dashboard", "user", "admin"):
+        raise HTTPException(400, "who must be one of: dashboard, user, admin")
+    if not pwd:
+        raise HTTPException(400, "missing password")
+
+    db = SessionLocal()
+    row = db.get(Secret, f"pin.{who}")
+    if not row or not argon2.verify(pwd, row.value):
+        raise HTTPException(401, "Invalid credentials")
+
+    return {"token": issue_token(scope=who), "scope": who}
+"""
 
 
 @app.post("/api/auth/login")
@@ -1348,7 +1363,7 @@ async def put_settings(payload: Dict[str, Any] = Body(...), _=Depends(require_sc
     prev_mirror_slave = prev_mr.get("slave_id")
     new_mirror_slave  = new_mr.get("slave_id")
 
-    # ----- rebuild contexts when hr window / units / mirror slave changed
+    # Rebuild contexts FIRST if these changed
     need_rebuild = (
         (prev.get("hr", {}) or {}) != (S().get("hr", {}) or {}) or
         (prev.get("local_units", {}) or {}) != (S().get("local_units", {}) or {}) or
@@ -1357,14 +1372,11 @@ async def put_settings(payload: Dict[str, Any] = Body(...), _=Depends(require_sc
     if need_rebuild:
         await rebuild_datastores_and_context()
 
-    # ----- only poke the RTU manager if SERIAL parameters changed (NOT slave_id)
-    prev_mr = (prev.get("mirror_rtu", {}) or {})
-    new_mr  = (S().get("mirror_rtu", {}) or {})
-    serial_fields = ("baudrate", "parity", "stopbits", "bytesize")
-    mirror_serial_changed = any(prev_mr.get(k) != new_mr.get(k) for k in serial_fields)
-    if mirror_serial_changed:
+    # Now poke managers to restart with the rebuilt contexts when any mirror serial param changed
+    serial_fields = ("slave_id", "baudrate", "parity", "stopbits", "bytesize")
+    mirror_changed = any(prev_mr.get(k) != new_mr.get(k) for k in serial_fields)
+    if mirror_changed:
         mirror_reload_event.set()
-
 
     return JSONResponse({"ok": True})
 

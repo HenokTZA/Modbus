@@ -4,8 +4,8 @@
     "poll_period_s": 1.0
   },
   "mirror_rtu": {
-    "slave_id": 3,
-    "baudrate": 115200,
+    "slave_id": 88,
+    "baudrate": 9600,
     "parity": "N",
     "stopbits": 1,
     "bytesize": 8
