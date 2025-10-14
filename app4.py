@@ -26,6 +26,10 @@ from jose import jwt, JWTError
 from passlib.hash import argon2
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy import create_engine, Column, String, DateTime, select
+
+import errno, serial
+import os
+
 # ================================================================
 
 app = FastAPI()
@@ -67,6 +71,54 @@ def _seed_secret_if_missing(db, key: str, plain: str):
         db.add(Secret(key=key, value=argon2.hash(plain)))
         db.commit()
 
+
+
+def _force_release_serial_fd(port_path: str = "/dev/ttySC1"):
+    """
+    Sweep our own process for any FDs still pointing at the serial device
+    and close them. Safe because we only close descriptors whose symlink
+    target is exactly the device node.
+    """
+    base = "/proc/self/fd"
+    closed = 0
+    try:
+        for fdname in os.listdir(base):
+            fpath = os.path.join(base, fdname)
+            try:
+                target = os.readlink(fpath)
+            except OSError:
+                continue
+            if target == port_path:
+                try:
+                    os.close(int(fdname))
+                    closed += 1
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[RTU mirror] fd sweep error: {e}")
+    if closed:
+        print(f"[RTU mirror] forcibly closed {closed} lingering FD(s) for {port_path}")
+
+
+async def settings_auto_reload():
+    path = Path(SETTINGS_PATH)
+    last = path.stat().st_mtime if path.exists() else 0
+    while True:
+        try:
+            cur = path.stat().st_mtime
+            if cur != last:
+                last = cur
+                async with SETTINGS_LOCK:
+                    SETTINGS.clear()
+                    SETTINGS.update(load_settings_from_disk())
+                # Context only needs rebuild for hr/units/slave id
+                await rebuild_datastores_and_context()
+                print("[SETTINGS] reloaded from disk")
+        except Exception as e:
+            print("[SETTINGS] auto-reload error:", e)
+        await asyncio.sleep(1.0)
+
+
 def init_db_and_seed():
     Base.metadata.create_all(engine)
     db = SessionLocal()
@@ -96,6 +148,67 @@ def require_scopes(*allowed: str):
             return scope
         raise HTTPException(403, "Forbidden")
     return _inner
+
+
+def _ctx_get_slave_map(ctx):
+    """
+    Return the internal slave map for a ModbusServerContext across pymodbus versions.
+    Always returns a dict (or {} if unavailable).
+    """
+    if ctx is None:
+        return {}
+
+    # Try public attr 'slaves' (may be a dict *or* a callable in some versions)
+    if hasattr(ctx, "slaves"):
+        val = getattr(ctx, "slaves")
+        if callable(val):
+            try:
+                val = val()  # some builds expose a callable returning the map
+            except TypeError:
+                val = None
+        if isinstance(val, dict):
+            return val
+
+    # Try private attr
+    val = getattr(ctx, "_slaves", None)
+    if isinstance(val, dict):
+        return val
+
+    # Fallback: build from iteration if supported
+    try:
+        return {k: ctx[k] for k in list(ctx)}
+    except Exception:
+        return {}
+
+def _ctx_set_slave_map(ctx, new_map: dict):
+    """
+    Set/replace the slave map on an existing ModbusServerContext across versions.
+    Mutates in-place if possible; otherwise tries attribute rebinding.
+    """
+    if ctx is None:
+        return
+    # Update an existing dict in place if available
+    for attr in ("slaves", "_slaves"):
+        if hasattr(ctx, attr):
+            cur = getattr(ctx, attr)
+            if not callable(cur) and isinstance(cur, dict):
+                cur.clear()
+                cur.update(new_map)
+                return
+    # Try attribute rebinding (works if property has a setter or it's a plain attr)
+    for attr in ("slaves", "_slaves"):
+        try:
+            setattr(ctx, attr, dict(new_map))
+            return
+        except Exception:
+            pass
+    # Last resort: best-effort per-key assignment (may not remove old keys)
+    try:
+        for k, v in new_map.items():
+            ctx.__setitem__(k, v)
+    except Exception:
+        pass
+
 
 
 def require_any_scope(allowed: list[str]):
@@ -324,7 +437,7 @@ def _copy_hr_values(src: List[int], dst: ModbusSequentialDataBlock, start_addr: 
 
 
 
-
+"""
 async def rebuild_datastores_and_context():
     global store0, store1, tcp_context, mirror_context
 
@@ -374,6 +487,68 @@ async def rebuild_datastores_and_context():
         served_tcp = f"{list(tcp_slaves.keys())}"
     print(f"[MAP] TCP serves units: {served_tcp}")
     print(f"[MAP] CH2 serves unit:  {mirror_id}")
+"""
+
+
+async def rebuild_datastores_and_context():
+    global store0, store1, tcp_context, mirror_context
+
+    hr_count = S()["hr"]["count"]
+    u0 = S()["local_units"]["unit0_id"]
+    u1 = S()["local_units"]["unit1_id"]
+    mirror_id = (S().get("mirror_rtu", {}) or {}).get("slave_id", u1)
+
+    # snapshot current values so we don't lose HR data across rebuilds
+    old0, old1 = [], []
+    if store0 and store1:
+        with contextlib.suppress(Exception):
+            old0 = _hr_block0().getValues(0, hr_count)
+        with contextlib.suppress(Exception):
+            old1 = _hr_block1().getValues(1, hr_count)
+
+    # new stores sized to the current HR window
+    new0 = make_store0(hr_count)
+    new1 = make_store1(hr_count)
+
+    # copy overlap
+    if old0:
+        _copy_hr_values(old0[:hr_count], new0.store["h"], 0)
+    if old1:
+        _copy_hr_values(old1[:hr_count], new1.store["h"], 1)
+
+    # desired slave maps (authoritative truth for this rebuild)
+    tcp_slaves = {u0: new0, u1: new1}
+    if mirror_id not in tcp_slaves:
+        tcp_slaves[mirror_id] = new1
+    mirror_map = {mirror_id: new1}
+
+    async with HR_LOCK:
+        # swap global stores
+        store0 = new0
+        store1 = new1
+
+        # ---- TCP context: create once, then mutate via helper (do NOT replace object)
+        if tcp_context is None:
+            tcp_context = ModbusServerContext(slaves=dict(tcp_slaves), single=False)
+        else:
+            _ctx_set_slave_map(tcp_context, tcp_slaves)
+
+        # ---- CH2 mirror context: create once, then mutate via helper (do NOT replace object)
+        if mirror_context is None:
+            mirror_context = ModbusServerContext(slaves=dict(mirror_map), single=False)
+        else:
+            _ctx_set_slave_map(mirror_context, mirror_map)
+
+    # logging: use the maps we just built (don’t introspect ctx; supports all versions)
+    try:
+        served_tcp = ", ".join(str(x) for x in sorted(tcp_slaves.keys()))
+    except Exception:
+        served_tcp = f"{list(tcp_slaves.keys())}"
+    print(f"[MAP] TCP serves units: {served_tcp}")
+    print(f"[MAP] CH2 serves unit:  {mirror_id}")
+
+
+
 
 
 
@@ -571,8 +746,9 @@ async def tcp_server_manager():
         await _stop_task()
 
 
+"""
 async def mirror_rtu_server_manager():
-    """Modbus RTU mirror on CH2: restart only when serial params change (NOT slave_id/context)."""
+
     global mirror_reload_event
 
     current_serial = {}
@@ -632,7 +808,7 @@ async def mirror_rtu_server_manager():
                 (server_task is None) or
                 server_task.done() or
                 serial_changed or
-                (force and serial_changed)  # only restart on force if serial actually changed
+                force  # only restart on force if serial actually changed
             )
 
             if needs_restart:
@@ -663,6 +839,119 @@ async def mirror_rtu_server_manager():
             await asyncio.sleep(0.5)
     finally:
         await _stop_task()
+"""
+
+
+
+
+# ---- helper: wait until /dev/ttySC1 can be opened exclusively ----
+async def wait_port_free(port: str, timeout: float = 5.0, probe_baud: int = 9600) -> bool:
+    """
+    Returns True as soon as the port can be opened with exclusive=True (and closes it),
+    or False after timeout. Non-blocking: uses asyncio.to_thread for the open.
+    """
+    last_err = None
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        try:
+            def _probe():
+                s = serial.Serial(port=port, baudrate=probe_baud, timeout=0.05, exclusive=True)
+                try:
+                    # on Linux this will fail with EBUSY/EAGAIN if someone still holds it
+                    return True
+                finally:
+                    try: s.close()
+                    except: pass
+            ok = await asyncio.to_thread(_probe)
+            if ok:
+                return True
+        except Exception as e:
+            last_err = e
+            await asyncio.sleep(0.1)  # brief backoff
+
+    print(f"[RTU mirror] port '{port}' still busy after {timeout:.1f}s: {last_err}")
+    return False
+
+# ---- inside mirror_rtu_server_manager() ----
+MIRROR_RESTART_LOCK = asyncio.Lock()  # at module level
+
+async def mirror_rtu_server_manager():
+    current_serial = {}
+    current_ctx = None
+    server_task: asyncio.Task | None = None
+
+    async def _start_once(cfg: dict, ctx: ModbusServerContext) -> asyncio.Task:
+        async def run():
+            await StartAsyncSerialServer(
+                context=ctx,
+                framer=FramerType.RTU,
+                port=MIRROR_CH2_PORT,
+                baudrate=int(cfg["baudrate"]),
+                parity=str(cfg["parity"]),
+                stopbits=int(cfg["stopbits"]),
+                bytesize=int(cfg["bytesize"]),
+                timeout=1,
+            )
+        return asyncio.create_task(run(), name=f"mbserial:{MIRROR_CH2_PORT}")
+
+    async def _start_with_retry(cfg, ctx):
+        delay = 0.25
+        for _ in range(8):  # ~2s total
+            try:
+                return await _start_once(cfg, ctx)
+            except OSError as e:
+                if getattr(e, "errno", None) in (errno.EAGAIN, errno.EBUSY, 11, 16):
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 1.5, 1.0)
+                else:
+                    raise
+        raise RuntimeError("Serial port stayed locked too long during start")
+
+    while True:
+        cfg = S().get("mirror_rtu", {}) or {}
+        watched = {
+            "baudrate": cfg.get("baudrate"),
+            "parity":   cfg.get("parity"),
+            "stopbits": cfg.get("stopbits"),
+            "bytesize": cfg.get("bytesize"),
+            "slave_id": cfg.get("slave_id"),
+        }
+        desired_ctx = mirror_context
+
+        needs_restart = (
+            watched != current_serial or
+            desired_ctx is not current_ctx or
+            (server_task is None) or
+            server_task.done()
+        )
+
+        if needs_restart:
+            async with MIRROR_RESTART_LOCK:
+                # 1) stop old server (if any) and await it
+                if server_task and not server_task.done():
+                    server_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await server_task
+
+                _force_release_serial_fd(MIRROR_CH2_PORT)
+
+                # 2) actively wait until the port is free
+                await wait_port_free(MIRROR_CH2_PORT, timeout=5.0)
+
+                # 3) start new server (with retry/backoff against any residual lock)
+                current_serial = watched
+                current_ctx = desired_ctx
+                try:
+                    server_task = await _start_with_retry(cfg, current_ctx)
+                except Exception as e:
+                    print("[RTU mirror] start failed:", e)
+                    server_task = None
+                else:
+                    print(f"[RTU mirror] {MIRROR_CH2_PORT} {cfg.get('baudrate')} {cfg.get('parity')} "
+                          f"{cfg.get('stopbits')} {cfg.get('bytesize')} | slave_id={cfg.get('slave_id')}")
+
+        await asyncio.sleep(0.5)
 
 
 
@@ -1008,6 +1297,7 @@ async def main():
         tcp_server_manager(),
         mirror_rtu_server_manager(),
         start_web(),
+        settings_auto_reload(),
     )
 
 if __name__ == "__main__":
