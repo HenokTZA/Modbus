@@ -34,7 +34,8 @@ import logging
 logging.getLogger("pymodbus").setLevel(logging.INFO)
 logging.getLogger("pymodbus.framer.rtu").setLevel(logging.DEBUG)  # add near imports
 
-PREV_MIRROR_ID: int | None = None
+from typing import Optional
+PREV_MIRROR_ID: Optional[int] = None
 PREV_EXPIRY: float = 0.0
 
 SKIP_NEXT_WATCH_RELOAD = False
@@ -110,6 +111,7 @@ def _force_release_serial_fd(port_path: str = "/dev/ttySC1"):
 
 
 async def settings_auto_reload():
+    global SKIP_NEXT_WATCH_RELOAD
     path = Path(SETTINGS_PATH)
     last = path.stat().st_mtime if path.exists() else 0
     while True:
@@ -482,7 +484,7 @@ async def rebuild_datastores_and_context():
     mirror_map = {mirror_id: new1}
     if PREV_MIRROR_ID and PREV_MIRROR_ID != mirror_id and time.monotonic() < PREV_EXPIRY:
         mirror_map[PREV_MIRROR_ID] = new1
-    _ctx_set_slave_map(mirror_context, mirror_map)
+    #_ctx_set_slave_map(mirror_context, mirror_map)
 
     async with HR_LOCK:
         # swap global stores
