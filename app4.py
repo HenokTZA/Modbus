@@ -481,6 +481,11 @@ async def rebuild_datastores_and_context():
     tcp_slaves = {u0: new0, u1: new1}
     if mirror_id not in tcp_slaves:
         tcp_slaves[mirror_id] = new1
+
+    # Grace period: keep previous mirror ID valid on TCP as well
+    if PREV_MIRROR_ID and PREV_MIRROR_ID != mirror_id and time.monotonic() < PREV_EXPIRY:
+        tcp_slaves.setdefault(PREV_MIRROR_ID, new1)
+
     mirror_map = {mirror_id: new1}
     if PREV_MIRROR_ID and PREV_MIRROR_ID != mirror_id and time.monotonic() < PREV_EXPIRY:
         mirror_map[PREV_MIRROR_ID] = new1
@@ -664,7 +669,7 @@ async def tcp_server_manager():
             await StartAsyncTcpServer(
                 context=tcp_context,                 # context is mutable; no restart needed on changes
                 address=("0.0.0.0", port),
-                ignore_missing_slaves=True,
+                ignore_missing_slaves=False,
             )
         t = asyncio.create_task(run(), name=f"mbtcp:{port}")
         def _dbg(task: asyncio.Task):
@@ -783,7 +788,6 @@ async def mirror_rtu_server_manager():
             "parity":   cfg.get("parity"),
             "stopbits": cfg.get("stopbits"),
             "bytesize": cfg.get("bytesize"),
-            "slave_id": cfg.get("slave_id"),
         }
         desired_ctx = mirror_context
 
