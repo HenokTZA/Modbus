@@ -30,7 +30,6 @@ from sqlalchemy import create_engine, Column, String, DateTime, select
 import errno, serial
 import os
 
-from typing import Optional
 import logging
 logging.getLogger("pymodbus").setLevel(logging.INFO)
 logging.getLogger("pymodbus.framer.rtu").setLevel(logging.DEBUG)  # add near imports
@@ -576,8 +575,8 @@ async def _safe_close(x):
         pass
 
 # ================== Managers & Poller ==================
-tcp_reload_event: Optional[asyncio.Event] = None
-mirror_reload_event: Optional[asyncio.Event] = None
+tcp_reload_event = asyncio.Event()
+mirror_reload_event = asyncio.Event()
 
 async def poll_upstream_and_update_cache():
     """Upstream master poller with live RTU reload."""
@@ -716,36 +715,6 @@ async def tcp_server_manager():
         await _stop_task()
 
 
-async def prime_serial_port(cfg: dict):
-    """Open with new params, flush, toggle lines, close — to ensure a clean state."""
-    def _do():
-        s = serial.Serial(
-            port=MIRROR_CH2_PORT,
-            baudrate=int(cfg["baudrate"]),
-            parity=str(cfg["parity"]),
-            stopbits=int(cfg["stopbits"]),
-            bytesize=int(cfg["bytesize"]),
-            timeout=0.05,
-            exclusive=True,
-        )
-        try:
-            # clear any stale bytes and poke line state
-            s.reset_input_buffer()
-            s.reset_output_buffer()
-            with contextlib.suppress(Exception):
-                s.dtr = False; s.rts = False
-            time.sleep(0.05)
-            with contextlib.suppress(Exception):
-                s.dtr = True; s.rts = True
-        finally:
-            s.close()
-    try:
-        await asyncio.to_thread(_do)
-    except Exception as e:
-        print("[RTU mirror] prime open failed:", e)
-
-
-
 
 # ---- helper: wait until /dev/ttySC1 can be opened exclusively ----
 async def wait_port_free(port: str, timeout: float = 5.0, probe_baud: int = 9600) -> bool:
@@ -784,22 +753,6 @@ async def mirror_rtu_server_manager():
     current_ctx = None
     server_task: asyncio.Task | None = None
 
-    while True:
-        # Wait for a signal or tick; the event now belongs to this loop
-        try:
-            # mirror_reload_event is set in main(), but guard just in case
-            evt = mirror_reload_event or getattr(app.state, "mirror_reload_event", None)
-            if evt:
-                await asyncio.wait_for(evt.wait(), timeout=0.5)
-                evt.clear()
-            else:
-                # no event yet (very early), just fall back to a short sleep
-                await asyncio.sleep(0.5)
-        except asyncio.TimeoutError:
-            pass
-
-        cfg = S().get("mirror_rtu", {}) or {}
-
     async def _start_once(cfg: dict, ctx: ModbusServerContext) -> asyncio.Task:
         async def run():
             await StartAsyncSerialServer(
@@ -829,22 +782,13 @@ async def mirror_rtu_server_manager():
         raise RuntimeError("Serial port stayed locked too long during start")
 
     while True:
-        # wait for either an explicit restart signal or a short tick
-        try:
-            await asyncio.wait_for(mirror_reload_event.wait(), timeout=0.5)
-            mirror_reload_event.clear()
-        except asyncio.TimeoutError:
-            pass
-
         cfg = S().get("mirror_rtu", {}) or {}
-        # normalize to what pyserial expects
-        cfg_norm = {
-            "baudrate": int(cfg.get("baudrate", 9600)),
-            "parity":   str(cfg.get("parity", "N")).upper()[:1],  # 'N','E','O'
-            "stopbits": int(cfg.get("stopbits", 1)),              # 1 or 2
-            "bytesize": int(cfg.get("bytesize", 8)),              # 7 or 8
+        watched = {
+            "baudrate": cfg.get("baudrate"),
+            "parity":   cfg.get("parity"),
+            "stopbits": cfg.get("stopbits"),
+            "bytesize": cfg.get("bytesize"),
         }
-        watched = dict(cfg_norm)
         desired_ctx = mirror_context
 
         needs_restart = (
@@ -867,21 +811,17 @@ async def mirror_rtu_server_manager():
                 # 2) actively wait until the port is free
                 await wait_port_free(MIRROR_CH2_PORT, timeout=5.0)
 
-                # open->flush->toggle with NEW params, then close, tiny settle
-                await prime_serial_port(cfg_norm)
-                await asyncio.sleep(0.1)
-
-
+                # 3) start new server (with retry/backoff against any residual lock)
+                current_serial = watched
+                current_ctx = desired_ctx
                 try:
-                    current_ctx = desired_ctx
-                    server_task = await _start_with_retry(cfg_norm, current_ctx)
-                    current_serial = watched   # update only after a successful start
+                    server_task = await _start_with_retry(cfg, current_ctx)
                 except Exception as e:
                     print("[RTU mirror] start failed:", e)
                     server_task = None
                 else:
-                    print(f"[RTU mirror] {MIRROR_CH2_PORT} {cfg_norm['baudrate']} {cfg_norm['parity']} "
-                          f"{cfg_norm['stopbits']} {cfg_norm['bytesize']}")
+                    print(f"[RTU mirror] {MIRROR_CH2_PORT} {cfg.get('baudrate')} {cfg.get('parity')} "
+                          f"{cfg.get('stopbits')} {cfg.get('bytesize')} | slave_id={cfg.get('slave_id')}")
 
         await asyncio.sleep(0.5)
 
@@ -1217,10 +1157,7 @@ async def put_settings(payload: Dict[str, Any] = Body(...), _=Depends(require_sc
     serial_fields = ("baudrate", "parity", "stopbits", "bytesize")
     mirror_serial_changed = any(prev_mr.get(k) != new_mr.get(k) for k in serial_fields)
     if mirror_serial_changed:
-        #mirror_reload_event.set()
-        evt = getattr(app.state, "mirror_reload_event", None)
-        if evt:
-            evt.set()
+        mirror_reload_event.set()
 
 
     return JSONResponse({"ok": True})
@@ -1241,12 +1178,6 @@ async def start_web():
 async def main():
     # NEW: initialize DB & seed PINs
     init_db_and_seed()
-
-    # create asyncio primitives on the running loop
-    global tcp_reload_event, mirror_reload_event
-    tcp_reload_event = asyncio.Event()
-    mirror_reload_event = asyncio.Event()
-    app.state.mirror_reload_event = mirror_reload_event  # let routes access it
 
     # initial stores/context
     await rebuild_datastores_and_context()
