@@ -30,6 +30,15 @@ from sqlalchemy import create_engine, Column, String, DateTime, select
 import errno, serial
 import os
 
+import logging
+logging.getLogger("pymodbus").setLevel(logging.INFO)
+logging.getLogger("pymodbus.framer.rtu").setLevel(logging.DEBUG)  # add near imports
+
+PREV_MIRROR_ID: int | None = None
+PREV_EXPIRY: float = 0.0
+
+SKIP_NEXT_WATCH_RELOAD = False
+
 # ================================================================
 
 app = FastAPI()
@@ -108,12 +117,15 @@ async def settings_auto_reload():
             cur = path.stat().st_mtime
             if cur != last:
                 last = cur
-                async with SETTINGS_LOCK:
-                    SETTINGS.clear()
-                    SETTINGS.update(load_settings_from_disk())
-                # Context only needs rebuild for hr/units/slave id
-                await rebuild_datastores_and_context()
-                print("[SETTINGS] reloaded from disk")
+                if SKIP_NEXT_WATCH_RELOAD:
+                    SKIP_NEXT_WATCH_RELOAD = False
+                else:
+                    async with SETTINGS_LOCK:
+                        SETTINGS.clear()
+                        SETTINGS.update(load_settings_from_disk())
+                    # Context only needs rebuild for hr/units/slave id
+                    await rebuild_datastores_and_context()
+                    print("[SETTINGS] reloaded from disk")
         except Exception as e:
             print("[SETTINGS] auto-reload error:", e)
         await asyncio.sleep(1.0)
@@ -437,59 +449,6 @@ def _copy_hr_values(src: List[int], dst: ModbusSequentialDataBlock, start_addr: 
 
 
 
-"""
-async def rebuild_datastores_and_context():
-    global store0, store1, tcp_context, mirror_context
-
-    hr_start = S()["hr"]["start"]
-    hr_count = S()["hr"]["count"]
-    u0 = S()["local_units"]["unit0_id"]
-    u1 = S()["local_units"]["unit1_id"]
-    mirror_id = (S().get("mirror_rtu", {}) or {}).get("slave_id", u1)
-
-    # snapshot current values so we don't lose HR data across rebuilds
-    old0, old1 = [], []
-    if store0 and store1:
-        with contextlib.suppress(Exception):
-            old0 = _hr_block0().getValues(0, hr_count)
-        with contextlib.suppress(Exception):
-            old1 = _hr_block1().getValues(1, hr_count)
-
-    # new stores
-    new0 = make_store0(hr_count)
-    new1 = make_store1(hr_count)
-
-    # copy overlap
-    if old0:
-        _copy_hr_values(old0[:hr_count], new0.store["h"], 0)
-    if old1:
-        _copy_hr_values(old1[:hr_count], new1.store["h"], 1)
-
-    # swap + build contexts
-    async with HR_LOCK:
-        store0 = new0
-        store1 = new1
-
-        # --- TCP context: expose both unit1_id and mirror_id as aliases of store1
-        tcp_slaves = {u0: store0, u1: store1}
-        if mirror_id not in tcp_slaves:
-            tcp_slaves[mirror_id] = store1  # <— NEW: serve mirror id on TCP too
-
-        tcp_context = ModbusServerContext(slaves=tcp_slaves, single=False)
-
-        # --- CH2 serial mirror: only mirror_id on store1
-        mirror_context = ModbusServerContext(slaves={mirror_id: store1}, single=False)
-
-    # helpful logs
-    try:
-        served_tcp = ", ".join(str(x) for x in sorted(tcp_slaves.keys()))
-    except Exception:
-        served_tcp = f"{list(tcp_slaves.keys())}"
-    print(f"[MAP] TCP serves units: {served_tcp}")
-    print(f"[MAP] CH2 serves unit:  {mirror_id}")
-"""
-
-
 async def rebuild_datastores_and_context():
     global store0, store1, tcp_context, mirror_context
 
@@ -521,6 +480,9 @@ async def rebuild_datastores_and_context():
     if mirror_id not in tcp_slaves:
         tcp_slaves[mirror_id] = new1
     mirror_map = {mirror_id: new1}
+    if PREV_MIRROR_ID and PREV_MIRROR_ID != mirror_id and time.monotonic() < PREV_EXPIRY:
+        mirror_map[PREV_MIRROR_ID] = new1
+    _ctx_set_slave_map(mirror_context, mirror_map)
 
     async with HR_LOCK:
         # swap global stores
@@ -746,103 +708,6 @@ async def tcp_server_manager():
         await _stop_task()
 
 
-"""
-async def mirror_rtu_server_manager():
-
-    global mirror_reload_event
-
-    current_serial = {}
-    server_task: asyncio.Task | None = None
-
-    async def _stop_task():
-        nonlocal server_task
-        if server_task and not server_task.done():
-            server_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await server_task
-        server_task = None
-        await asyncio.sleep(0.25)  # give tty driver time to release
-
-    async def _start(cfg: dict) -> asyncio.Task:
-        async def run():
-            await StartAsyncSerialServer(
-                context=mirror_context,              # context is mutable; slave_id map can change w/o restart
-                framer=FramerType.RTU,
-                port=MIRROR_CH2_PORT,
-                baudrate=int(cfg.get("baudrate", 9600)),
-                parity=str(cfg.get("parity", "N")),
-                stopbits=int(cfg.get("stopbits", 1)),
-                bytesize=int(cfg.get("bytesize", 8)),
-                timeout=1,
-            )
-        t = asyncio.create_task(run(), name=f"mbserial:{MIRROR_CH2_PORT}")
-        def _dbg(task: asyncio.Task):
-            if task.cancelled():
-                return
-            exc = task.exception()
-            if exc:
-                print(f"[RTU mirror] task crashed: {exc!r}")
-        t.add_done_callback(_dbg)
-        return t
-
-    try:
-        while True:
-            cfg = S().get("mirror_rtu", {}) or {}
-            watched_serial = {
-                "baudrate": int(cfg.get("baudrate", 9600)),
-                "parity":   str(cfg.get("parity", "N")),
-                "stopbits": int(cfg.get("stopbits", 1)),
-                "bytesize": int(cfg.get("bytesize", 8)),
-            }
-            # NOTE: slave_id is intentionally NOT part of watched_serial
-
-            # Allow a manual poke; we only honor it if serial params changed
-            force = False
-            if mirror_reload_event.is_set():
-                mirror_reload_event.clear()
-                force = True
-
-            serial_changed = (watched_serial != current_serial)
-
-            needs_restart = (
-                (server_task is None) or
-                server_task.done() or
-                serial_changed or
-                force  # only restart on force if serial actually changed
-            )
-
-            if needs_restart:
-                await _stop_task()
-
-                current_serial = watched_serial
-
-                # Retry/backoff to avoid "tty busy" errors
-                last_err = None
-                for attempt in range(1, 6):
-                    try:
-                        server_task = await _start(cfg)
-                        print(
-                            f"[RTU mirror] {MIRROR_CH2_PORT} {watched_serial['baudrate']} "
-                            f"{watched_serial['parity']} {watched_serial['stopbits']} {watched_serial['bytesize']} "
-                            f"| slave_id={(S().get('mirror_rtu') or {}).get('slave_id')} (running)"
-                        )
-                        last_err = None
-                        break
-                    except Exception as e:
-                        last_err = e
-                        print(f"[RTU mirror] start attempt {attempt} failed: {e!r}")
-                        await asyncio.sleep(0.4 * attempt)
-
-                if last_err is not None:
-                    print(f"[RTU mirror] giving up for now: {last_err!r}")
-
-            await asyncio.sleep(0.5)
-    finally:
-        await _stop_task()
-"""
-
-
-
 
 # ---- helper: wait until /dev/ttySC1 can be opened exclusively ----
 async def wait_port_free(port: str, timeout: float = 5.0, probe_baud: int = 9600) -> bool:
@@ -892,6 +757,7 @@ async def mirror_rtu_server_manager():
                 stopbits=int(cfg["stopbits"]),
                 bytesize=int(cfg["bytesize"]),
                 timeout=1,
+                ignore_missing_slaves=True,  # <— add this
             )
         return asyncio.create_task(run(), name=f"mbserial:{MIRROR_CH2_PORT}")
 
@@ -962,6 +828,13 @@ async def mirror_rtu_server_manager():
 
 # ---------- NEW: Auth endpoints ----------
 
+
+@app.get("/api/runtime/mirror_units")
+def runtime_mirror_units():
+    try:
+        return {"mirror_units": sorted(_ctx_get_slave_map(mirror_context).keys())}
+    except Exception as e:
+        return {"mirror_units": [], "error": str(e)}
 
 
 
@@ -1242,6 +1115,11 @@ async def put_settings(payload: Dict[str, Any] = Body(...), _=Depends(require_sc
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to save settings: {e}")
 
+        global SKIP_NEXT_WATCH_RELOAD
+        SKIP_NEXT_WATCH_RELOAD = True
+
+
+
         SETTINGS.clear()
         SETTINGS.update(current_on_disk)
 
@@ -1251,6 +1129,12 @@ async def put_settings(payload: Dict[str, Any] = Body(...), _=Depends(require_sc
 
     prev_mirror_slave = prev_mr.get("slave_id")
     new_mirror_slave  = new_mr.get("slave_id")
+
+    if prev_mirror_slave != new_mirror_slave:
+        global PREV_MIRROR_ID, PREV_EXPIRY
+        PREV_MIRROR_ID = prev_mirror_slave
+        PREV_EXPIRY = time.monotonic() + 60  # keep old ID alive for 60s
+
 
     # ----- rebuild contexts when hr window / units / mirror slave changed
     need_rebuild = (
