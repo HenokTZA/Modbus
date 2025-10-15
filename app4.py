@@ -483,12 +483,12 @@ async def rebuild_datastores_and_context():
         tcp_slaves[mirror_id] = new1
 
     # Grace period: keep previous mirror ID valid on TCP as well
-    if PREV_MIRROR_ID and PREV_MIRROR_ID != mirror_id and time.monotonic() < PREV_EXPIRY:
-        tcp_slaves.setdefault(PREV_MIRROR_ID, new1)
+    #if PREV_MIRROR_ID and PREV_MIRROR_ID != mirror_id and time.monotonic() < PREV_EXPIRY:
+        #tcp_slaves.setdefault(PREV_MIRROR_ID, new1)
 
     mirror_map = {mirror_id: new1}
-    if PREV_MIRROR_ID and PREV_MIRROR_ID != mirror_id and time.monotonic() < PREV_EXPIRY:
-        mirror_map[PREV_MIRROR_ID] = new1
+    #if PREV_MIRROR_ID and PREV_MIRROR_ID != mirror_id and time.monotonic() < PREV_EXPIRY:
+        #mirror_map[PREV_MIRROR_ID] = new1
     #_ctx_set_slave_map(mirror_context, mirror_map)
 
     async with HR_LOCK:
@@ -1136,10 +1136,10 @@ async def put_settings(payload: Dict[str, Any] = Body(...), _=Depends(require_sc
     prev_mirror_slave = prev_mr.get("slave_id")
     new_mirror_slave  = new_mr.get("slave_id")
 
-    if prev_mirror_slave != new_mirror_slave:
-        global PREV_MIRROR_ID, PREV_EXPIRY
-        PREV_MIRROR_ID = prev_mirror_slave
-        PREV_EXPIRY = time.monotonic() + 60  # keep old ID alive for 60s
+    #if prev_mirror_slave != new_mirror_slave:
+        #global PREV_MIRROR_ID, PREV_EXPIRY
+        #PREV_MIRROR_ID = prev_mirror_slave
+        #PREV_EXPIRY = time.monotonic() + 60  # keep old ID alive for 60s
 
 
     # ----- rebuild contexts when hr window / units / mirror slave changed
