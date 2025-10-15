@@ -4,7 +4,7 @@
     "poll_period_s": 1.0
   },
   "mirror_rtu": {
-    "slave_id": 18,
+    "slave_id": 20,
     "baudrate": 9600,
     "parity": "N",
     "stopbits": 1,
@@ -15,7 +15,7 @@
   },
   "local_units": {
     "unit0_id": 4,
-    "unit1_id": 5
+    "unit1_id": 7
   },
   "hr": {
     "start": 0,

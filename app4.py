@@ -35,12 +35,20 @@ import logging
 logging.getLogger("pymodbus").setLevel(logging.INFO)
 logging.getLogger("pymodbus.framer.rtu").setLevel(logging.DEBUG)  # add near imports
 
+import sys, signal, contextlib, subprocess
+from pathlib import Path
+
+
+
+
 from typing import Optional
 PREV_MIRROR_ID: Optional[int] = None
 PREV_EXPIRY: float = 0.0
 
 SKIP_NEXT_WATCH_RELOAD = False
 
+
+MIRROR_QUEUE: Optional[asyncio.Queue] = None
 # ================================================================
 
 app = FastAPI()
@@ -529,6 +537,259 @@ async def _write_both_views(regs: List[int]):
     async with HR_LOCK:
         _hr_block0().setValues(0, regs)  # 0..count-1
         _hr_block1().setValues(1, regs)  # 1..count
+    # push to sidecar (coalesce)
+    try:
+        if MIRROR_QUEUE is not None:
+            # keep only the newest snapshot
+            while not MIRROR_QUEUE.empty():
+                MIRROR_QUEUE.get_nowait()
+            MIRROR_QUEUE.put_nowait(list(regs))
+    except Exception:
+        pass
+
+"""
+async def mirror_sidecar_supervisor():
+    child_proc: asyncio.subprocess.Process | None = None
+    child_stdin: asyncio.StreamWriter | None = None
+    current_cfg: dict | None = None
+
+    child_path = str(Path(__file__).parent / "mirror_sidecar.py")
+
+    async def _stop_child():
+        nonlocal child_proc, child_stdin
+        if child_proc:
+            try:
+                child_proc.terminate()
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(child_proc.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                with contextlib.suppress(Exception):
+                    child_proc.kill()
+            child_proc = None
+        if child_stdin:
+            with contextlib.suppress(Exception):
+                child_stdin.close()
+            child_stdin = None
+        await asyncio.sleep(0.1)
+
+    async def _start_child(cfg: dict):
+        nonlocal child_proc, child_stdin
+
+        args = [
+            sys.executable, "-u", child_path,
+            "--port", MIRROR_CH2_PORT,
+            "--baudrate", str(cfg["baudrate"]),
+            "--parity",   str(cfg["parity"]).upper()[:1],
+            "--stopbits", str(cfg["stopbits"]),
+            "--bytesize", str(cfg["bytesize"]),
+            "--slave-id", str(cfg["slave_id"]),
+            "--count",    str(S()["hr"]["count"]),
+        ]
+
+        child_proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        # Wrap child's stdin as StreamWriter
+        loop = asyncio.get_running_loop()
+        transport = child_proc._transport  # type: ignore[attr-defined]
+        protocol = asyncio.StreamReaderProtocol(asyncio.StreamReader())
+        child_stdin = asyncio.StreamWriter(child_proc.stdin, protocol, None, loop)  # type: ignore
+
+        print(f"[RTU sidecar] spawned pid={child_proc.pid} cfg={cfg}")
+
+    async def _send_snapshot(regs: List[int]):
+        nonlocal child_stdin
+        if not child_stdin:
+            return
+        msg = {"op": "snap", "values": [int(x) & 0xFFFF for x in regs]}
+        data = (json.dumps(msg) + "\n").encode()
+        child_stdin.write(data)
+        with contextlib.suppress(Exception):
+            await child_stdin.drain()
+
+    def _desired_cfg() -> dict:
+        mr = (S().get("mirror_rtu", {}) or {})
+        return {
+            "baudrate": int(mr.get("baudrate", 9600)),
+            "parity":   str(mr.get("parity", "N")),
+            "stopbits": int(mr.get("stopbits", 1)),
+            "bytesize": int(mr.get("bytesize", 8)),
+            "slave_id": int(mr.get("slave_id", (S().get("local_units", {}) or {}).get("unit1_id", 2))),
+        }
+
+    async def _initial_snapshot():
+        try:
+            regs = await snapshot_regs()
+            await _send_snapshot(regs)
+        except Exception:
+            pass
+
+    # ensure we don't miss the very first bring-up
+    evt = mirror_reload_event or getattr(app.state, "mirror_reload_event", None)
+    if evt:
+        evt.set()
+
+    while True:
+        # wait for a poke or small tick
+        evt = mirror_reload_event or getattr(app.state, "mirror_reload_event", None)
+        if evt:
+            try:
+                await asyncio.wait_for(evt.wait(), timeout=0.5)
+                if evt.is_set(): evt.clear()
+            except asyncio.TimeoutError:
+                pass
+        else:
+            await asyncio.sleep(0.5)
+
+        desired = _desired_cfg()
+        need_restart = (current_cfg != desired) or (child_proc is None) or (child_proc.returncode is not None)
+
+        if need_restart:
+            await _stop_child()
+            await _start_child(desired)
+            current_cfg = desired
+            await asyncio.sleep(0.2)
+            await _initial_snapshot()
+
+        # coalesce and send latest snapshot (if any)
+        if MIRROR_QUEUE is not None and not MIRROR_QUEUE.empty():
+            # drain to last
+            last = None
+            while not MIRROR_QUEUE.empty():
+                last = await MIRROR_QUEUE.get()
+            if last is not None:
+                await _send_snapshot(last)
+
+        await asyncio.sleep(0.05)
+"""
+
+import sys, subprocess, contextlib
+
+async def mirror_sidecar_supervisor():
+    """
+    Spawns/kills mirror_sidecar.py with the requested serial params.
+    Streams HR snapshots to it via JSON lines over stdin.
+    """
+    child_proc: Optional[asyncio.subprocess.Process] = None
+    child_stdin: Optional[asyncio.StreamWriter] = None
+    current_cfg: Optional[dict] = None
+
+    child_path = str(Path(__file__).parent / "mirror_sidecar.py")
+
+    async def _stop_child():
+        nonlocal child_proc, child_stdin
+        if child_proc:
+            with contextlib.suppress(Exception):
+                child_proc.terminate()
+            try:
+                await asyncio.wait_for(child_proc.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                with contextlib.suppress(Exception):
+                    child_proc.kill()
+            child_proc = None
+        if child_stdin:
+            with contextlib.suppress(Exception):
+                child_stdin.close()
+            child_stdin = None
+        await asyncio.sleep(0.1)
+
+    async def _start_child(cfg: dict):
+        nonlocal child_proc, child_stdin
+        args = [
+            sys.executable, "-u", child_path,
+            "--port", MIRROR_CH2_PORT,
+            "--baudrate", str(cfg["baudrate"]),
+            "--parity",   str(cfg["parity"]).upper()[:1],
+            "--stopbits", str(cfg["stopbits"]),
+            "--bytesize", str(cfg["bytesize"]),
+            "--slave-id", str(cfg["slave_id"]),
+            "--count",    str(S()["hr"]["count"]),
+        ]
+        child_proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        # In 3.9, this is already a StreamWriter:
+        child_stdin = child_proc.stdin
+        print(f"[RTU sidecar] spawned pid={child_proc.pid} cfg={cfg}")
+
+    async def _send_snapshot(regs: List[int]):
+        nonlocal child_stdin
+        if not child_stdin:
+            return
+        msg = {"op": "snap", "values": [int(x) & 0xFFFF for x in regs]}
+        data = (json.dumps(msg) + "\n").encode()
+        child_stdin.write(data)
+        with contextlib.suppress(Exception):
+            await child_stdin.drain()
+
+    def _desired_cfg() -> dict:
+        mr = (S().get("mirror_rtu", {}) or {})
+        return {
+            "baudrate": int(mr.get("baudrate", 9600)),
+            "parity":   str(mr.get("parity", "N")),
+            "stopbits": int(mr.get("stopbits", 1)),
+            "bytesize": int(mr.get("bytesize", 8)),
+            "slave_id": int(mr.get("slave_id", (S().get("local_units", {}) or {}).get("unit1_id", 2))),
+        }
+
+    async def _initial_snapshot():
+        try:
+            regs = await snapshot_regs()
+            await _send_snapshot(regs)
+        except Exception:
+            pass
+
+    # ensure first bring-up happens quickly
+    evt = mirror_reload_event or getattr(app.state, "mirror_reload_event", None)
+    if evt:
+        evt.set()
+
+    while True:
+        # Wait for a poke or light tick
+        evt = mirror_reload_event or getattr(app.state, "mirror_reload_event", None)
+        if evt:
+            try:
+                await asyncio.wait_for(evt.wait(), timeout=0.5)
+                if evt.is_set():
+                    evt.clear()
+            except asyncio.TimeoutError:
+                pass
+        else:
+            await asyncio.sleep(0.5)
+
+        desired = _desired_cfg()
+        need_restart = (
+            current_cfg != desired or
+            child_proc is None or
+            (child_proc.returncode is not None)
+        )
+
+        if need_restart:
+            await _stop_child()
+            await _start_child(desired)
+            current_cfg = desired
+            await asyncio.sleep(0.2)
+            await _initial_snapshot()
+
+        # coalesce & send latest snapshot if queued
+        if MIRROR_QUEUE is not None and not MIRROR_QUEUE.empty():
+            last = None
+            while not MIRROR_QUEUE.empty():
+                last = await MIRROR_QUEUE.get()
+            if last is not None:
+                await _send_snapshot(last)
+
+        await asyncio.sleep(0.05)
+
+
 
 # --------------- Scaling meta ---------------
 ANNEX_A: Dict[int, Tuple[str, float]] = {
@@ -777,8 +1038,9 @@ async def wait_port_free(port: str, timeout: float = 5.0, probe_baud: int = 9600
     return False
 
 # ---- inside mirror_rtu_server_manager() ----
-MIRROR_RESTART_LOCK = asyncio.Lock()  # at module level
+#MIRROR_RESTART_LOCK = asyncio.Lock()  # at module level
 
+"""
 async def mirror_rtu_server_manager():
     current_serial = {}
     current_ctx = None
@@ -865,6 +1127,140 @@ async def mirror_rtu_server_manager():
                 else:
                     print(f"[RTU mirror] {MIRROR_CH2_PORT} {cfg_norm['baudrate']} "
                           f"{cfg_norm['parity']} {cfg_norm['stopbits']} {cfg_norm['bytesize']}")
+"""
+
+# ---- replace everything from "MIRROR_RESTART_LOCK = ..." down to the end
+#      of your current mirror_rtu_server_manager() with this version.
+"""
+MIRROR_RESTART_LOCK = asyncio.Lock()
+
+async def mirror_rtu_server_manager():
+    current_serial: dict = {}
+    current_ctx = None
+    server_task: asyncio.Task | None = None
+    started_once = False  # guarantee first start even if no event fires
+
+    async def _start_once(cfg: dict, ctx: ModbusServerContext) -> asyncio.Task:
+        async def run():
+            await StartAsyncSerialServer(
+                context=ctx,
+                framer=FramerType.RTU,
+                port=MIRROR_CH2_PORT,
+                baudrate=int(cfg["baudrate"]),
+                parity=str(cfg["parity"]),
+                stopbits=int(cfg["stopbits"]),
+                bytesize=int(cfg["bytesize"]),
+                timeout=1,
+                ignore_missing_slaves=True,
+            )
+        t = asyncio.create_task(run(), name=f"mbserial:{MIRROR_CH2_PORT}")
+        return t
+
+    async def _start_with_retry(cfg, ctx):
+        delay = 0.25
+        for _ in range(8):  # ~2s total
+            try:
+                return await _start_once(cfg, ctx)
+            except OSError as e:
+                if getattr(e, "errno", None) in (errno.EAGAIN, errno.EBUSY, 11, 16):
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 1.5, 1.0)
+                else:
+                    raise
+        raise RuntimeError("Serial port stayed locked too long during start")
+
+    # helper: double-probe with/without exclusive because some tty drivers ignore TIOCEXCL
+    async def _port_really_free(port: str, baud: int = 9600) -> bool:
+        last = None
+        for exclusive in (True, False):
+            try:
+                def _probe():
+                    s = serial.Serial(port=port, baudrate=baud, timeout=0.05, exclusive=exclusive)
+                    try:
+                        return True
+                    finally:
+                        try: s.close()
+                        except: pass
+                ok = await asyncio.to_thread(_probe)
+                if ok:
+                    return True
+            except Exception as e:
+                last = e
+                await asyncio.sleep(0.1)
+        if last:
+            print(f"[RTU mirror] probe still busy: {last!r}")
+        return False
+
+    while True:
+        # Wait for a poke, but still tick every 0.5s so a missed event cannot stall bring-up
+        kicked = False
+        evt = mirror_reload_event or getattr(app.state, "mirror_reload_event", None)
+        if evt:
+            try:
+                await asyncio.wait_for(evt.wait(), timeout=0.5)
+                if evt.is_set():
+                    evt.clear()
+                    kicked = True
+                    print("[RTU mirror] reload event received")
+            except asyncio.TimeoutError:
+                pass
+        else:
+            await asyncio.sleep(0.5)
+
+        # normalize desired settings
+        cfg = S().get("mirror_rtu", {}) or {}
+        cfg_norm = {
+            "baudrate": int(cfg.get("baudrate", 9600)),
+            "parity":   str(cfg.get("parity", "N")).upper()[:1],
+            "stopbits": int(cfg.get("stopbits", 1)),
+            "bytesize": int(cfg.get("bytesize", 8)),
+        }
+        desired_ctx = mirror_context
+
+        serial_changed = (cfg_norm != current_serial)
+        ctx_changed = (desired_ctx is not current_ctx)
+        need_restart = (
+            not started_once or kicked or serial_changed or ctx_changed or
+            server_task is None or (server_task and server_task.done())
+        )
+        if not need_restart:
+            continue
+
+        async with MIRROR_RESTART_LOCK:
+            # 1) Stop old server; don’t hang on cancel
+            if server_task and not server_task.done():
+                server_task.cancel()
+                try:
+                    await asyncio.wait_for(server_task, timeout=2.0)
+                except asyncio.TimeoutError:
+                    print("[RTU mirror] previous server didn’t stop in time; forcing FD close")
+
+            # 2) Sweep any leaked FDs and ensure kernel actually released the port
+            _force_release_serial_fd(MIRROR_CH2_PORT)
+            await asyncio.sleep(0.1)
+            await _port_really_free(MIRROR_CH2_PORT, baud=cfg_norm["baudrate"])
+
+            # 3) Prime line with NEW params to flush stale bytes and flip DTR/RTS
+            try:
+                await prime_serial_port(cfg_norm)
+            except Exception as e:
+                print("[RTU mirror] prime failed:", e)
+            await asyncio.sleep(0.2)
+
+            # 4) Start fresh
+            try:
+                current_ctx = desired_ctx
+                server_task = await _start_with_retry(cfg_norm, current_ctx)
+                current_serial = dict(cfg_norm)
+                started_once = True
+                print(f"[RTU mirror] up on {MIRROR_CH2_PORT} "
+                      f"{cfg_norm['baudrate']} {cfg_norm['parity']} {cfg_norm['stopbits']} {cfg_norm['bytesize']}")
+            except Exception as e:
+                print("[RTU mirror] start failed:", e)
+                server_task = None
+                await asyncio.sleep(0.5)
+"""
+
 
 
 
@@ -875,6 +1271,21 @@ async def mirror_rtu_server_manager():
 # ================== Web API & Dashboard ==================
 
 # ---------- NEW: Auth endpoints ----------
+
+@app.get("/api/runtime/serial_status")
+def serial_status():
+    # very lightweight: what the app thinks it’s running with
+    mr = (S().get("mirror_rtu", {}) or {})
+    return {
+        "port": MIRROR_CH2_PORT,
+        "configured": {
+            "baudrate": int(mr.get("baudrate", 9600)),
+            "parity":   str(mr.get("parity", "N")).upper()[:1],
+            "stopbits": int(mr.get("stopbits", 1)),
+            "bytesize": int(mr.get("bytesize", 8)),
+        }
+    }
+
 
 
 @app.get("/api/runtime/mirror_units")
@@ -1225,10 +1636,12 @@ async def main():
     init_db_and_seed()
 
     # create asyncio primitives on the running loop
-    global tcp_reload_event, mirror_reload_event
+    global tcp_reload_event, mirror_reload_event, MIRROR_QUEUE
     tcp_reload_event = asyncio.Event()
     mirror_reload_event = asyncio.Event()
     app.state.mirror_reload_event = mirror_reload_event  # let routes access it
+
+    MIRROR_QUEUE = asyncio.Queue(maxsize=4)
 
     # initial stores/context
     await rebuild_datastores_and_context()
@@ -1237,7 +1650,7 @@ async def main():
     await asyncio.gather(
         poll_upstream_and_update_cache(),
         tcp_server_manager(),
-        mirror_rtu_server_manager(),
+        mirror_sidecar_supervisor(),
         start_web(),
         settings_auto_reload(),
     )
