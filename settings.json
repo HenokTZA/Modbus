@@ -6,7 +6,7 @@
   "mirror_rtu": {
     "slave_id": 18,
     "baudrate": 9600,
-    "parity": "E",
+    "parity": "N",
     "stopbits": 1,
     "bytesize": 8
   },

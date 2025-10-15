@@ -779,116 +779,6 @@ async def wait_port_free(port: str, timeout: float = 5.0, probe_baud: int = 9600
 # ---- inside mirror_rtu_server_manager() ----
 MIRROR_RESTART_LOCK = asyncio.Lock()  # at module level
 
-"""
-async def mirror_rtu_server_manager():
-    current_serial = {}
-    current_ctx = None
-    server_task: asyncio.Task | None = None
-
-    while True:
-        # Wait for a signal or tick; the event now belongs to this loop
-        try:
-            # mirror_reload_event is set in main(), but guard just in case
-            evt = mirror_reload_event or getattr(app.state, "mirror_reload_event", None)
-            if evt:
-                await asyncio.wait_for(evt.wait(), timeout=0.5)
-                evt.clear()
-            else:
-                # no event yet (very early), just fall back to a short sleep
-                await asyncio.sleep(0.5)
-        except asyncio.TimeoutError:
-            pass
-
-        cfg = S().get("mirror_rtu", {}) or {}
-
-    async def _start_once(cfg: dict, ctx: ModbusServerContext) -> asyncio.Task:
-        async def run():
-            await StartAsyncSerialServer(
-                context=ctx,
-                framer=FramerType.RTU,
-                port=MIRROR_CH2_PORT,
-                baudrate=int(cfg["baudrate"]),
-                parity=str(cfg["parity"]),
-                stopbits=int(cfg["stopbits"]),
-                bytesize=int(cfg["bytesize"]),
-                timeout=1,
-                ignore_missing_slaves=True,  # <— add this
-            )
-        return asyncio.create_task(run(), name=f"mbserial:{MIRROR_CH2_PORT}")
-
-    async def _start_with_retry(cfg, ctx):
-        delay = 0.25
-        for _ in range(8):  # ~2s total
-            try:
-                return await _start_once(cfg, ctx)
-            except OSError as e:
-                if getattr(e, "errno", None) in (errno.EAGAIN, errno.EBUSY, 11, 16):
-                    await asyncio.sleep(delay)
-                    delay = min(delay * 1.5, 1.0)
-                else:
-                    raise
-        raise RuntimeError("Serial port stayed locked too long during start")
-
-    while True:
-        # wait for either an explicit restart signal or a short tick
-        try:
-            await asyncio.wait_for(mirror_reload_event.wait(), timeout=0.5)
-            mirror_reload_event.clear()
-        except asyncio.TimeoutError:
-            pass
-
-        cfg = S().get("mirror_rtu", {}) or {}
-        # normalize to what pyserial expects
-        cfg_norm = {
-            "baudrate": int(cfg.get("baudrate", 9600)),
-            "parity":   str(cfg.get("parity", "N")).upper()[:1],  # 'N','E','O'
-            "stopbits": int(cfg.get("stopbits", 1)),              # 1 or 2
-            "bytesize": int(cfg.get("bytesize", 8)),              # 7 or 8
-        }
-        watched = dict(cfg_norm)
-        desired_ctx = mirror_context
-
-        needs_restart = (
-            watched != current_serial or
-            desired_ctx is not current_ctx or
-            (server_task is None) or
-            server_task.done()
-        )
-
-        if needs_restart:
-            async with MIRROR_RESTART_LOCK:
-                # 1) stop old server (if any) and await it
-                if server_task and not server_task.done():
-                    server_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await server_task
-
-                _force_release_serial_fd(MIRROR_CH2_PORT)
-
-                # 2) actively wait until the port is free
-                await wait_port_free(MIRROR_CH2_PORT, timeout=5.0)
-
-                # open->flush->toggle with NEW params, then close, tiny settle
-                await prime_serial_port(cfg_norm)
-                await asyncio.sleep(0.1)
-
-
-                try:
-                    current_ctx = desired_ctx
-                    server_task = await _start_with_retry(cfg_norm, current_ctx)
-                    current_serial = watched   # update only after a successful start
-                except Exception as e:
-                    print("[RTU mirror] start failed:", e)
-                    server_task = None
-                else:
-                    print(f"[RTU mirror] {MIRROR_CH2_PORT} {cfg_norm['baudrate']} {cfg_norm['parity']} "
-                          f"{cfg_norm['stopbits']} {cfg_norm['bytesize']}")
-
-        await asyncio.sleep(0.5)
-"""
-
-MIRROR_RESTART_LOCK = asyncio.Lock()
-
 async def mirror_rtu_server_manager():
     current_serial = {}
     current_ctx = None
@@ -923,7 +813,7 @@ async def mirror_rtu_server_manager():
         raise RuntimeError("Serial port stayed locked too long during start")
 
     while True:
-        # 1) Wait for a poke, but still tick every 0.5s
+        # Wait for a poke, but still tick every 0.5s
         evt = mirror_reload_event or getattr(app.state, "mirror_reload_event", None)
         if evt:
             try:
@@ -934,7 +824,6 @@ async def mirror_rtu_server_manager():
         else:
             await asyncio.sleep(0.5)
 
-        # 2) Read desired config & context
         cfg = S().get("mirror_rtu", {}) or {}
         cfg_norm = {
             "baudrate": int(cfg.get("baudrate", 9600)),
@@ -952,7 +841,6 @@ async def mirror_rtu_server_manager():
             server_task.done()
         )
 
-        # 3) (Re)start if needed
         if needs_restart:
             async with MIRROR_RESTART_LOCK:
                 if server_task and not server_task.done():
@@ -963,7 +851,7 @@ async def mirror_rtu_server_manager():
                 _force_release_serial_fd(MIRROR_CH2_PORT)
                 await wait_port_free(MIRROR_CH2_PORT, timeout=5.0)
 
-                # prime the line with NEW params to clear stale bytes
+                # prime line with NEW params to clear stale bytes
                 await prime_serial_port(cfg_norm)
                 await asyncio.sleep(0.1)
 
@@ -977,6 +865,9 @@ async def mirror_rtu_server_manager():
                 else:
                     print(f"[RTU mirror] {MIRROR_CH2_PORT} {cfg_norm['baudrate']} "
                           f"{cfg_norm['parity']} {cfg_norm['stopbits']} {cfg_norm['bytesize']}")
+
+
+
 
 
 
@@ -1341,6 +1232,7 @@ async def main():
 
     # initial stores/context
     await rebuild_datastores_and_context()
+    mirror_reload_event.set()
 
     await asyncio.gather(
         poll_upstream_and_update_cache(),
