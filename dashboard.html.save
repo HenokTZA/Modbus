@@ -349,7 +349,7 @@
           <input id="newGatePw" type="password" placeholder="New password" maxlength="64" autocomplete="new-password">
         </div>
       </div>
-      <p class="hint" id="gateChangeHint">Tip: choose at least 6 characters.</p>
+      <p class="hint" id="gateChangeHint">Tip: choose at least 4 characters.</p>
       <div class="pin-err" id="gateChangeErr" style="min-height:18px"></div>
       <div class="actions">
         <button id="gateChangeCancel" class="btn"><span id="i.cancel">Cancel</span></button>
@@ -377,7 +377,7 @@
           <input id="newUserPw" type="password" placeholder="New password" maxlength="64" autocomplete="new-password">
         </div>
       </div>
-      <p class="hint" id="userChangeHint">Tip: choose at least 6 characters.</p>
+      <p class="hint" id="userChangeHint">Tip: choose at least 4 characters.</p>
       <div class="pin-err" id="userChangeErr" style="min-height:18px"></div>
       <div class="actions">
         <button id="userChangeCancel" class="btn"><span id="i.cancelUser">Cancel</span></button>
@@ -500,6 +500,8 @@
   /* ==================== I18N STRINGS ==================== */
   const I18N = {
     es: {
+      pwHint: "Sugerencia: use al menos 6 caracteres.",
+      pwTooShort: "La nueva contraseña debe tener al menos 6 caracteres.",
       userChangeTitle: "Cambiar contraseña de Ajustes de Usuario",
       gateChangeTitle: "Cambiar contraseña del panel",
       cancel: "Cancelar",
@@ -529,7 +531,7 @@
       ytLink: "Visite nuestro canal de YouTube",
       modelBase: "RECTIFICADOR ADAX TECNA MODELO: {model} — N° SERIE: ",
       gateTitle: "Ingrese PIN de Acceso",
-      gateSub: "Por favor ingrese el PIN de 4 dígitos para ver el panel.",
+      gateSub: "Ingrese su contraseña para ver el panel de control.",
       gateEnter: "Entrar",
       gateErr: "PIN incorrecto. Inténtelo de nuevo.",
       measTitle: "MEDICIONES ACTUALES",
@@ -607,6 +609,7 @@
       }
     },
     en: {
+      
       userChangeTitle: "Change user settings password",
       gateChangeTitle: "Change dashboard password",
       cancel: "Cancel",
@@ -636,7 +639,7 @@
       ytLink: "Visit our YouTube channel",
       modelBase: "RECTIFIER ADAX TECNA MODEL: {model} — SERIAL NO: ",
       gateTitle: "Enter Access PIN",
-      gateSub: "Please enter the 4-digit PIN to view the dashboard.",
+      gateSub: "Please enter your password to view the dashboard.",
       gateEnter: "Enter",
       gateErr: "Incorrect PIN. Try again.",
       measTitle: "CURRENT MEASUREMENTS",
@@ -733,27 +736,20 @@
   }
 
   async function apiRequest(path, opts = {}){
-  const { noAutoLogout, ...rest } = opts;  // ← new flag
-  const headers = Object.assign(
-    {"Content-Type":"application/json"},
-    rest.headers || {},
-    AUTH_TOKEN ? {"Authorization": "Bearer " + AUTH_TOKEN} : {}
-  );
-
-  const res = await fetch(path, { ...rest, headers });
-
-  // Only force logout if the caller didn't opt out
-  if (res.status === 401 && !noAutoLogout) {
-    // Try to surface server detail if present
-    let detail = "Unauthorized";
-    try { detail = (await res.json()).detail || detail; } catch {}
-    setAuth(null, null);
-    showGate();
-    throw new Error(detail);
+    const headers = Object.assign(
+      {"Content-Type":"application/json"},
+      opts.headers || {},
+      AUTH_TOKEN ? {"Authorization": "Bearer " + AUTH_TOKEN} : {}
+    );
+    const res = await fetch(path, {...opts, headers});
+    // If unauthorized, force gate
+    if (res.status === 401) {
+      setAuth(null, null);
+      showGate();
+      throw new Error("Unauthorized");
+    }
+    return res;
   }
-  return res;
-}
-
 
   async function loginWithPin(scope, pin){
   // Map UI scopes to backend 'who'
@@ -776,7 +772,6 @@ async function changePin(role, oldPin, newPin){
   const who = (role === "gate") ? "dashboard" : role; // "user" allowed too
   const r = await apiRequest("/api/auth/change", {
     method: "POST",
-    noAutoLogout: true,                 // ← keep 401 detail; don't boot user
     body: JSON.stringify({ who, old_password: oldPin, new_password: newPin })
   });
   if (!r.ok) {
@@ -785,7 +780,6 @@ async function changePin(role, oldPin, newPin){
   }
   return r.json();
 }
-
 
 
   async function resetAllPins(){
@@ -980,53 +974,25 @@ async function submitGateChange(){
   const newP = $("newGatePw").value.trim();
   const err = $("gateChangeErr");
   err.textContent = "";
-
-  if (!oldP || !newP) {
-    err.textContent = LANG==="es" ? "Complete ambos campos." : "Please fill both fields.";
-    return;
-  }
-  if (newP.length < 6) {
-    err.textContent = LANG==="es"
-      ? "La nueva contraseña debe tener al menos 6 caracteres."
-      : "New password must be at least 6 characters.";
-    return;
-  }
+  if (!oldP || !newP) { err.textContent = LANG==="es" ? "Complete ambos campos." : "Please fill both fields."; return; }
+  if (newP.length < 4) { err.textContent = LANG==="es" ? "La nueva contraseña es muy corta." : "New password is too short."; return; }
 
   try {
-    // If not authenticated, log in with the current dashboard password to get a token
+    // If not authenticated, temporarily login with current dashboard password to obtain a token
     if (!AUTH_TOKEN) {
-      await loginWithPin("gate", oldP); // scope => "dashboard"
+      await loginWithPin("gate", oldP); // scope "dashboard"
     }
     await changePin("gate", oldP, newP); // POST /api/auth/change
-    // Security: drop token so user must log in with the new password
+    // Security: drop token so user must login with the new password
     setAuth(null, null);
     closeGateChange();
     showGate();
     $("gatePin").value = "";
     toast(t("changedOk"));
   } catch (e) {
-  const msg = (e && e.message ? String(e.message) : "").toLowerCase();
-  if (msg.includes("6..64") || msg.includes("6–64") || msg.includes("6-64") || msg.includes("least 6")) {
-    err.textContent = (LANG==="es")
-      ? "La nueva contraseña debe tener entre 6 y 64 caracteres."
-      : "New password must be 6–64 characters.";
-  } else if (
-    msg.includes("old password") ||
-    msg.includes("incorrect") ||
-    msg.includes("invalid") ||
-    msg.includes("unauthorized") ||
-    msg.includes("login")
-  ) {
     err.textContent = t("wrongOld");
-  } else {
-    err.textContent = (LANG==="es")
-      ? "Error cambiando la contraseña."
-      : "Error changing password.";
   }
 }
-
-}
-
 
 $("gateChangeSave").onclick = submitGateChange;
 $("newGatePw").addEventListener("keydown", (e)=>{ if(e.key==="Enter") submitGateChange(); });
@@ -1092,42 +1058,33 @@ async function submitUserChange(){
     err.textContent = (LANG==="es") ? "Complete ambos campos." : "Please fill both fields.";
     return;
   }
-  if (newP.length < 6) {
-    err.textContent = (LANG==="es")
-      ? "La nueva contraseña debe tener al menos 6 caracteres."
-      : "New password must be at least 6 characters.";
+  if (newP.length < 4) {
+    err.textContent = (LANG==="es") ? "La nueva contraseña es muy corta." : "New password is too short.";
     return;
   }
 
+  // Preserve the current token/scope so we can restore after a temporary user login
   const prevToken = AUTH_TOKEN;
   const prevScope = AUTH_SCOPE;
 
   try {
+    // Ensure we have a 'user' scope token to call /api/auth/change for user role
     if (AUTH_SCOPE !== "user") {
       await loginWithPin("user", oldP); // temporary user auth
     }
     await changePin("user", oldP, newP);
     toast(t("changedOk"));
     closeUserChange();
-    openSettingsPin("user"); // let operator re-enter the new PIN
+
+    // After changing, let the operator immediately re-enter the new PIN for settings
+    openSettingsPin("user");
   } catch (e) {
-    const msg = (e && e.message ? String(e.message) : "").toLowerCase();
-    if (msg.includes("6..64") || msg.includes("6–64")) {
-      err.textContent = LANG==="es"
-        ? "La nueva contraseña debe tener entre 6 y 64 caracteres."
-        : "New password must be 6–64 characters.";
-    } else if (msg.includes("incorrect")) {
-      err.textContent = t("wrongOld");
-    } else {
-      err.textContent = (LANG==="es")
-        ? "Error cambiando la contraseña."
-        : "Error changing password.";
-    }
+    err.textContent = t("wrongOld");
   } finally {
+    // Restore whatever token we had before opening this modal (dashboard/user/none)
     setAuth(prevToken, prevScope);
   }
 }
-
 
 $("userChangeSave").onclick = submitUserChange;
 $("newUserPw").addEventListener("keydown", (e)=>{ if(e.key==="Enter") submitUserChange(); });
