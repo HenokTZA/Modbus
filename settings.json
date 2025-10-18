@@ -4,18 +4,18 @@
     "poll_period_s": 1.0
   },
   "mirror_rtu": {
-    "slave_id": 78,
+    "slave_id": 79,
     "baudrate": 4800,
     "parity": "N",
     "stopbits": 1,
     "bytesize": 8
   },
   "tcp": {
-    "port": 1520
+    "port": 502
   },
   "local_units": {
     "unit0_id": 4,
-    "unit1_id": 7
+    "unit1_id": 33
   },
   "hr": {
     "start": 0,

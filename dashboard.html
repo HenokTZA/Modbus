@@ -292,8 +292,6 @@
     <div class="row">
       <div class="pill" id="m">modo: --</div>
       <div class="pill" id="t">último: --</div>
-      <div class="pill"><a href="/api/hr" target="_blank">/api/hr</a></div>
-      <div class="pill"><a href="/api/debug_store" target="_blank">/api/debug_store</a></div>
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:12px">
       <div class="card"><div id="i.tileVB" class="k">Tensión Batería</div><div class="v" id="vb">--</div></div>
@@ -469,6 +467,7 @@
     <input id="tcp_unit1" type="number" min="1" max="247" placeholder="2">
   </div>
 </div>
+<p class="hint" id="tcpPortHint"></p>
 
 
       <!-- BRANDING & DEVICE (hidden for user role) -->
@@ -500,6 +499,8 @@
   /* ==================== I18N STRINGS ==================== */
   const I18N = {
     es: {
+      tcpPortNote: "El puerto TCP debe ser 502 o estar en el rango 1025–5000.",
+      tcpPortInvalid: "Por favor, elija un puerto correcto (502 o 1025–5000).",
       userChangeTitle: "Cambiar contraseña de Ajustes de Usuario",
       gateChangeTitle: "Cambiar contraseña del panel",
       cancel: "Cancelar",
@@ -529,7 +530,7 @@
       ytLink: "Visite nuestro canal de YouTube",
       modelBase: "RECTIFICADOR ADAX TECNA MODELO: {model} — N° SERIE: ",
       gateTitle: "Ingrese PIN de Acceso",
-      gateSub: "Por favor ingrese el PIN de 4 dígitos para ver el panel.",
+      gateSub: "Por favor ingrese la contraseña para ver el panel de control.",
       gateEnter: "Entrar",
       gateErr: "PIN incorrecto. Inténtelo de nuevo.",
       measTitle: "MEDICIONES ACTUALES",
@@ -607,6 +608,8 @@
       }
     },
     en: {
+      tcpPortNote: "Please choose port 502 or a port in the range 1025–5000.",
+      tcpPortInvalid: "Please choose a correct port (502 or 1025–5000).",
       userChangeTitle: "Change user settings password",
       gateChangeTitle: "Change dashboard password",
       cancel: "Cancel",
@@ -636,7 +639,7 @@
       ytLink: "Visit our YouTube channel",
       modelBase: "RECTIFIER ADAX TECNA MODEL: {model} — SERIAL NO: ",
       gateTitle: "Enter Access PIN",
-      gateSub: "Please enter the 4-digit PIN to view the dashboard.",
+      gateSub: "Please enter password to view the dashboard.",
       gateEnter: "Enter",
       gateErr: "Incorrect PIN. Try again.",
       measTitle: "CURRENT MEASUREMENTS",
@@ -900,7 +903,7 @@ async function changePin(role, oldPin, newPin){
     $("i.cancelUser").textContent = t("cancel");
     $("i.saveUser").textContent   = t("save");
 
-
+    $("tcpPortHint").textContent = t("tcpPortNote");
 
     // Set the dynamic PIN title according to current role, if modal is open
     const pinTitle = CURRENT_SETTINGS_ROLE === 'admin' ? t("pinAdminTitle")
@@ -1214,7 +1217,7 @@ $("btnResetPwNo").onclick = ()=>{
       bat_sentido:  x => [ST.bat_sentido.label,   x===1 ? ST.bat_sentido.charge : ST.bat_sentido.discharge],
       modo_carga:   x => [ST.modo_carga.label,    x ? ST.modo_carga.manual : ST.modo_carga.auto],
       nivel_carga:  x => [ST.nivel_carga.label,   x ? ST.nivel_carga.fondo : ST.nivel_carga.flote],
-      timer_nicd:   x => [ST.timer_nicd.label,    x ? ST.timer_nicd.started : ST.nivel_carga.off],
+      timer_nicd:   x => [ST.timer_nicd.label,    x ? ST.timer_nicd.started : ST.timer_nicd.off],
     };
     $("statesList").innerHTML = items.map(it=>{
       const [label, value] = (map[it.key] ? map[it.key]( (it.valueRaw!==undefined?it.valueRaw : (it.value==="ENCENDIDO"||it.value==="ON"||it.value==="MANUAL"||it.value==="FONDO"||it.value==="STARTED")) ) : [it.label,it.value]);
@@ -1418,6 +1421,17 @@ document.addEventListener("keydown", (e) => {
 
   $("btnSave").onclick = async ()=>{
   const btn=$("btnSave"); btn.disabled=true; const original=btn.textContent; btn.textContent = (LANG==="es"?"Guardando…":"Saving…");
+
+  // ---- TCP port validation
+  const tcpPortVal = +$("tcp_port").value;
+  const validPort = (tcpPortVal === 502) || (tcpPortVal >= 1025 && tcpPortVal <= 5000);
+  if (!validPort) {
+    toast(t("tcpPortInvalid"));
+    $("tcp_port").style.borderColor = "#a33";
+    setTimeout(()=>{$("tcp_port").style.borderColor="";}, 1500);
+    btn.disabled=false; btn.textContent=original;
+    return;
+  }
 
   const basePayload = {
     upstream: {

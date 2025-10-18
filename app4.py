@@ -92,6 +92,34 @@ def _seed_secret_if_missing(db, key: str, plain: str):
 
 
 
+def _filter_user_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+
+    # mirror_rtu: allow slave_id + serial params
+    mr_in = payload.get("mirror_rtu") or {}
+    if isinstance(mr_in, dict):
+        mr_out = {}
+        for k in ("slave_id", "baudrate", "parity", "stopbits", "bytesize"):
+            if k in mr_in:
+                mr_out[k] = mr_in[k]
+        if mr_out:
+            out["mirror_rtu"] = mr_out
+
+    # tcp: allow port only
+    tcp_in = payload.get("tcp") or {}
+    if isinstance(tcp_in, dict) and "port" in tcp_in:
+        out["tcp"] = {"port": tcp_in["port"]}
+
+    # local_units: allow unit1_id only
+    lu_in = payload.get("local_units") or {}
+    if isinstance(lu_in, dict) and "unit1_id" in lu_in:
+        out["local_units"] = {"unit1_id": lu_in["unit1_id"]}
+
+    # user cannot change: upstream, hr, branding, device, unit0_id
+    return out
+
+
+
 def _force_release_serial_fd(port_path: str = "/dev/ttySC1"):
     """
     Sweep our own process for any FDs still pointing at the serial device
@@ -1520,12 +1548,18 @@ async def get_settings():
 
 
 @app.put("/api/settings")
-async def put_settings(payload: Dict[str, Any] = Body(...), _=Depends(require_scope("admin"))):
-    """
-    Admin-only: update settings and hot-reload contexts if HR window / units / mirror slave change.
-    Rebuild contexts BEFORE poking managers to avoid 'requested slave does not exist'.
-    """
+async def put_settings(
+    payload: Dict[str, Any] = Body(...),
+    scope: str = Depends(require_any_scope(["admin", "user"]))
+):
+
     payload = payload or {}
+
+    if scope == "user":
+        payload = _filter_user_payload(payload)
+        # If nothing user-changeable was sent, just acknowledge.
+        if not payload:
+            return JSONResponse({"ok": True})
 
     # ---- sanitize upstream
     if isinstance(payload.get("upstream"), dict):
@@ -1549,6 +1583,18 @@ async def put_settings(payload: Dict[str, Any] = Body(...), _=Depends(require_sc
             mr_out["parity"] = str(mr_in["parity"])
         payload["mirror_rtu"] = mr_out  # no 'port'
 
+    # ---- sanitize tcp
+    if isinstance(payload.get("tcp"), dict):
+        tcp_in = payload["tcp"]
+        tcp_out: Dict[str, Any] = {}
+        if "port" in tcp_in:
+            try:
+                tcp_out["port"] = int(tcp_in["port"])
+            except Exception:
+                raise HTTPException(status_code=400, detail="tcp.port must be an integer")
+        payload["tcp"] = tcp_out
+
+
     async with SETTINGS_LOCK:
         current_on_disk = load_settings_from_disk()
 
@@ -1558,6 +1604,16 @@ async def put_settings(payload: Dict[str, Any] = Body(...), _=Depends(require_sc
                     deep_merge(dst[k], v)
                 else:
                     dst[k] = v
+
+        # Validate TCP port: must be 502 or in 1000..5000
+        try:
+            port = int(current_on_disk.get("tcp", {}).get("port", 1502))
+        except Exception:
+            raise HTTPException(status_code=400, detail="tcp.port must be an integer")
+
+        if not (port == 502 or (1025 <= port <= 5000)):
+            raise HTTPException(status_code=400, detail="TCP port must be 502 or between 1000–5000")
+
 
         prev = json.loads(json.dumps(current_on_disk))
         deep_merge(current_on_disk, payload)
@@ -1617,6 +1673,134 @@ async def put_settings(payload: Dict[str, Any] = Body(...), _=Depends(require_sc
 
 
     return JSONResponse({"ok": True})
+
+
+# --- replace the whole /api/settings route with this ---
+
+"""
+@app.put("/api/settings")
+async def put_settings(
+    payload: Dict[str, Any] = Body(...),
+    scope: str = Depends(require_any_scope(["admin", "user"]))  # ← allow both
+):
+
+    payload = payload or {}
+    is_admin = (scope == "admin")
+
+    # ---- sanitize mirror_rtu always (we'll filter by role below)
+    def sanitize_mirror(mr_in: dict) -> dict:
+        out: Dict[str, Any] = {}
+        if "slave_id" in mr_in: out["slave_id"] = int(mr_in["slave_id"])
+        for k in ("baudrate", "stopbits", "bytesize"):
+            if k in mr_in: out[k] = int(mr_in[k])
+        if "parity" in mr_in: out["parity"] = str(mr_in["parity"])
+        return out
+
+    # ---- build a role-filtered payload
+    filtered: Dict[str, Any] = {}
+
+    if is_admin:
+        # Admin: keep your current sanitize logic
+        if isinstance(payload.get("upstream"), dict):
+            up_in = payload["upstream"]; filtered["upstream"] = {}
+            if "device_unit_id" in up_in:
+                filtered["upstream"]["device_unit_id"] = int(up_in["device_unit_id"])
+            if "poll_period_s" in up_in:
+                filtered["upstream"]["poll_period_s"] = float(up_in["poll_period_s"])
+
+        if isinstance(payload.get("mirror_rtu"), dict):
+            filtered["mirror_rtu"] = sanitize_mirror(payload["mirror_rtu"])
+
+        if isinstance(payload.get("tcp"), dict):
+            tcp_in = payload["tcp"]; filtered["tcp"] = {}
+            if "port" in tcp_in: filtered["tcp"]["port"] = int(tcp_in["port"])
+
+        if isinstance(payload.get("local_units"), dict):
+            lu_in = payload["local_units"]; filtered["local_units"] = {}
+            for k in ("unit0_id", "unit1_id"):
+                if k in lu_in: filtered["local_units"][k] = int(lu_in[k])
+
+        if isinstance(payload.get("hr"), dict):
+            hr_in = payload["hr"]; filtered["hr"] = {}
+            if "start" in hr_in: filtered["hr"]["start"] = int(hr_in["start"])
+            if "count" in hr_in: filtered["hr"]["count"] = int(hr_in["count"])
+
+        # brand/device optional
+        if isinstance(payload.get("branding"), dict):
+            filtered["branding"] = dict(payload["branding"])
+        if isinstance(payload.get("device"), dict):
+            filtered["device"] = dict(payload["device"])
+
+    else:
+        # User: whitelist only these
+        if isinstance(payload.get("mirror_rtu"), dict):
+            filtered["mirror_rtu"] = sanitize_mirror(payload["mirror_rtu"])
+        if isinstance(payload.get("tcp"), dict):
+            tcp_in = payload["tcp"]; filtered["tcp"] = {}
+            if "port" in tcp_in: filtered["tcp"]["port"] = int(tcp_in["port"])
+        if isinstance(payload.get("local_units"), dict):
+            lu_in = payload["local_units"]; filtered["local_units"] = {}
+            if "unit1_id" in lu_in: filtered["local_units"]["unit1_id"] = int(lu_in["unit1_id"])
+
+        # If user tried to change anything else, reject clearly
+        disallowed_keys = set(payload.keys()) - {"mirror_rtu", "tcp", "local_units"}
+        if disallowed_keys:
+            raise HTTPException(403, f"User role cannot modify: {', '.join(sorted(disallowed_keys))}")
+
+    # ---- merge into on-disk settings
+    async with SETTINGS_LOCK:
+        current_on_disk = load_settings_from_disk()
+
+        def deep_merge(dst, src):
+            for k, v in (src or {}).items():
+                if isinstance(v, dict) and isinstance(dst.get(k), dict):
+                    deep_merge(dst[k], v)
+                else:
+                    dst[k] = v
+
+        prev = json.loads(json.dumps(current_on_disk))
+        deep_merge(current_on_disk, filtered)
+
+        # purge unsupported keys under upstream/mirror
+        if isinstance(current_on_disk.get("upstream"), dict):
+            for k in ("port", "baudrate", "parity", "stopbits", "bytesize"):
+                current_on_disk["upstream"].pop(k, None)
+        if isinstance(current_on_disk.get("mirror_rtu"), dict):
+            current_on_disk["mirror_rtu"].pop("port", None)
+
+        try:
+            await save_settings_to_disk(current_on_disk)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to save settings: {e}")
+
+        global SKIP_NEXT_WATCH_RELOAD
+        SKIP_NEXT_WATCH_RELOAD = True
+
+        SETTINGS.clear()
+        SETTINGS.update(current_on_disk)
+
+    # ----- change detection (same as before)
+    prev_mr = (prev.get("mirror_rtu", {}) or {})
+    new_mr  = (S().get("mirror_rtu", {}) or {})
+    prev_mirror_slave = prev_mr.get("slave_id")
+    new_mirror_slave  = new_mr.get("slave_id")
+
+    need_rebuild = (
+        (prev.get("hr", {}) or {}) != (S().get("hr", {}) or {}) or
+        (prev.get("local_units", {}) or {}) != (S().get("local_units", {}) or {}) or
+        prev_mirror_slave != new_mirror_slave
+    )
+    if need_rebuild:
+        await rebuild_datastores_and_context()
+
+    serial_fields = ("baudrate", "parity", "stopbits", "bytesize")
+    mirror_serial_changed = any(prev_mr.get(k) != new_mr.get(k) for k in serial_fields)
+    if mirror_serial_changed:
+        evt = getattr(app.state, "mirror_reload_event", None)
+        if evt: evt.set()
+
+    return JSONResponse({"ok": True})
+"""
 
 
 
