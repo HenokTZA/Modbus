@@ -52,11 +52,8 @@ except Exception:
     _ModbusTcpServer = None
 from pymodbus.server import StartAsyncTcpServer  # you already have this
 
-import contextlib
-import asyncio
 
 from typing import Optional
-
 PREV_MIRROR_ID: Optional[int] = None
 PREV_EXPIRY: float = 0.0
 
@@ -106,49 +103,48 @@ def _seed_secret_if_missing(db, key: str, plain: str):
         db.commit()
 
 
-
+"""
 def _force_close_tcp_port(port: int):
-    """
-    Close ONLY listening TCP sockets in this process bound to `port`
-    (handles IPv4 and IPv6). Leaves established connections alone.
-    """
     base = "/proc/self/fd"
     closed = 0
     for fdname in os.listdir(base):
         try:
             fd = int(fdname)
+        except Exception:
+            continue
+        try:
             st = os.fstat(fd)
         except Exception:
             continue
         if not stat.S_ISSOCK(st.st_mode):
             continue
 
+        sock = None
+        # Try IPv4 first, then IPv6
         for family in (socket.AF_INET, socket.AF_INET6):
-            s = None
             try:
-                s = socket.fromfd(fd, family, socket.SOCK_STREAM)
-                # Must be a bound/listening TCP socket
-                laddr = s.getsockname()
-                lport = (laddr[1] if isinstance(laddr, tuple) and len(laddr) >= 2 else None)
-                if lport != port:
-                    continue
-                is_listening = s.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN) == 1
-                if not is_listening:
-                    continue
-                os.close(fd)
-                closed += 1
-                print(f"[TCP] forcibly closed listener fd={fd} on :{port}")
-                break  # fd is gone; stop trying families
+                sock = socket.fromfd(fd, family, socket.SOCK_STREAM)
+                # If family doesn't match, getsockname will raise
+                laddr = sock.getsockname()
+                # IPv4: (host, port); IPv6: (host, port, flow, scope)
+                lport = laddr[1] if isinstance(laddr, tuple) and len(laddr) >= 2 else None
+                if lport == port:
+                    try:
+                        os.close(fd)
+                        closed += 1
+                        print(f"[TCP] forcibly closed listener fd={fd} on :{port}")
+                    except Exception:
+                        pass
+                break
             except Exception:
                 pass
             finally:
-                if s is not None:
-                    try: s.detach()
+                if sock is not None:
+                    try: sock.detach()
                     except Exception: pass
     if closed:
-        print(f"[TCP] force-closed {closed} listening fd(s) on :{port}")
-
-
+        print(f"[TCP] force-closed {closed} fd(s) on :{port}")
+"""
 
 
 
@@ -434,48 +430,6 @@ async def maybe_lock(lock):
 # ---------- Alarm & State model helpers ----------
 def _bit(v: int, n: int) -> int:
     return 1 if (int(v) >> n) & 1 else 0
-
-def _force_close_tcp_port(port: int):
-    """
-    Close ONLY listening TCP sockets in this process bound to `port`
-    (handles IPv4 and IPv6). Leaves established connections alone.
-    """
-    base = "/proc/self/fd"
-    closed = 0
-    for fdname in os.listdir(base):
-        try:
-            fd = int(fdname)
-            st = os.fstat(fd)
-        except Exception:
-            continue
-        if not stat.S_ISSOCK(st.st_mode):
-            continue
-
-        for family in (socket.AF_INET, socket.AF_INET6):
-            s = None
-            try:
-                s = socket.fromfd(fd, family, socket.SOCK_STREAM)
-                # Must be a bound/listening TCP socket
-                laddr = s.getsockname()
-                lport = (laddr[1] if isinstance(laddr, tuple) and len(laddr) >= 2 else None)
-                if lport != port:
-                    continue
-                is_listening = s.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN) == 1
-                if not is_listening:
-                    continue
-                os.close(fd)
-                closed += 1
-                print(f"[TCP] forcibly closed listener fd={fd} on :{port}")
-                break  # fd is gone; stop trying families
-            except Exception:
-                pass
-            finally:
-                if s is not None:
-                    try: s.detach()
-                    except Exception: pass
-    if closed:
-        print(f"[TCP] force-closed {closed} listening fd(s) on :{port}")
-
 
 def build_measurements_from_hr(hr: list[int]) -> dict:
     return {
@@ -922,21 +876,450 @@ async def poll_upstream_and_update_cache():
         await _safe_close(client)
 
 
+"""
+async def tcp_server_manager():
+    current_port = None
+    server_task: asyncio.Task | None = None
+
+    async def _stop_task():
+        nonlocal server_task
+        if server_task and not server_task.done():
+            server_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await server_task
+        server_task = None
+        await asyncio.sleep(0.3)  # let the OS free the socket
+
+    async def _start(port: int) -> asyncio.Task:
+        async def run():
+            await StartAsyncTcpServer(
+                context=tcp_context,                 # context is mutable; no restart needed on changes
+                address=("0.0.0.0", port),
+                ignore_missing_slaves=False,
+            )
+        t = asyncio.create_task(run(), name=f"mbtcp:{port}")
+        def _dbg(task: asyncio.Task):
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc:
+                print(f"[TCP] task crashed: {exc!r}")
+        t.add_done_callback(_dbg)
+        return t
+
+    try:
+        while True:
+            desired_port = S()["tcp"]["port"]
+
+            needs_restart = (
+                (server_task is None) or
+                server_task.done() or
+                desired_port != current_port
+            )
+
+            if needs_restart:
+                await _stop_task()
+                current_port = desired_port
+
+                last_err = None
+                for attempt in range(1, 6):
+                    try:
+                        server_task = await _start(current_port)
+                        print(f"[TCP] listening on 0.0.0.0:{current_port}")
+                        last_err = None
+                        break
+                    except Exception as e:
+                        last_err = e
+                        print(f"[TCP] start attempt {attempt} failed: {e!r}")
+                        await asyncio.sleep(0.3 * attempt)
+
+                if last_err is not None:
+                    print(f"[TCP] giving up for now: {last_err!r}")
+
+            await asyncio.sleep(0.5)
+    finally:
+        await _stop_task()
+"""
+
+"""
+async def tcp_server_manager():
+    current_port: Optional[int] = None
+    server_task: Optional[asyncio.Task] = None
+    server_obj = None  # asyncio.AbstractServer or pymodbus server wrapper
+
+    async def _stop_task():
+        nonlocal server_task, server_obj
+        # try graceful shutdown across pymodbus/asyncio versions
+        if server_obj:
+            close = (getattr(server_obj, "server_close", None) or
+                     getattr(server_obj, "close", None) or
+                     getattr(server_obj, "shutdown", None))
+            if close:
+                res = close()
+                if asyncio.iscoroutine(res):
+                    await res
+            wait_closed = getattr(server_obj, "wait_closed", None)
+            if wait_closed:
+                try:
+                    await wait_closed()
+                except Exception:
+                    pass
+            server_obj = None
+
+        if server_task and not server_task.done():
+            server_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await server_task
+        server_task = None
+        await asyncio.sleep(0.3)  # give the OS a moment to release the socket
+
+    async def _start(port: int) -> asyncio.Task:
+
+        async def run():
+            nonlocal server_obj
+            try:
+                # Preferred path: get the server object without blocking forever.
+                srv = await StartAsyncTcpServer(
+                    context=tcp_context,
+                    address=("0.0.0.0", port),
+                    ignore_missing_slaves=False,
+                    defer_start=True,          # newer pymodbus
+                )
+                server_obj = srv
+                await srv.serve_forever()
+            except TypeError:
+                # Older pymodbus without defer_start: fall back to the classic runner.
+                server_obj = None
+                await StartAsyncTcpServer(
+                    context=tcp_context,
+                    address=("0.0.0.0", port),
+                    ignore_missing_slaves=False,
+                )
+        t = asyncio.create_task(run(), name=f"mbtcp:{port}")
+        def _dbg(task: asyncio.Task):
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc:
+                print(f"[TCP] task crashed: {exc!r}")
+        t.add_done_callback(_dbg)
+        return t
+
+    try:
+        while True:
+            desired_port = int(S()["tcp"]["port"])
+
+            needs_restart = (
+                server_task is None or
+                server_task.done() or
+                desired_port != current_port
+            )
+
+            if needs_restart:
+                await _stop_task()
+                current_port = desired_port
+
+                last_err = None
+                for attempt in range(1, 6):
+                    try:
+                        server_task = await _start(current_port)
+                        print(f"[TCP] listening on 0.0.0.0:{current_port}")
+                        last_err = None
+                        break
+                    except Exception as e:
+                        last_err = e
+                        print(f"[TCP] start attempt {attempt} failed: {e!r}")
+                        await asyncio.sleep(0.3 * attempt)
+
+                if last_err is not None:
+                    print(f"[TCP] giving up for now: {last_err!r}")
+
+            # wake up quickly if something pokes us
+            evt = tcp_reload_event or getattr(app.state, "tcp_reload_event", None)
+            if evt:
+                try:
+                    await asyncio.wait_for(evt.wait(), timeout=0.5)
+                    if evt.is_set():
+                        evt.clear()
+                except asyncio.TimeoutError:
+                    pass
+            else:
+                await asyncio.sleep(0.5)
+    finally:
+        await _stop_task()
+"""
+
+"""
+async def tcp_server_manager():
+    current_port = None
+    server_task: asyncio.Task | None = None
+    server_handle = None  # ModbusTcpServer or asyncio.Server (depending on path)
+
+    async def _stop_task():
+        nonlocal server_task, server_handle
+        # Try graceful stop via server_handle
+        if server_handle is not None:
+            try:
+                stop = getattr(server_handle, "stop", None)
+                if stop:
+                    res = stop()
+                    if asyncio.iscoroutine(res):
+                        await res
+                # Fallback APIs
+                close = (getattr(server_handle, "server_close", None) or
+                         getattr(server_handle, "close", None))
+                if close:
+                    res = close()
+                    if asyncio.iscoroutine(res):
+                        await res
+                wait_closed = getattr(server_handle, "wait_closed", None)
+                if wait_closed:
+                    try:
+                        await wait_closed()
+                    except Exception:
+                        pass
+            finally:
+                server_handle = None
+
+        # Cancel runner task if any
+        if server_task and not server_task.done():
+            server_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await server_task
+        server_task = None
+
+        # Give kernel time to drop the old listen socket
+        await asyncio.sleep(0.3)
+
+    async def _start(port: int) -> asyncio.Task:
+        nonlocal server_handle
+
+        async def run_new_api():
+            nonlocal server_handle
+            # Newer API: explicit server object with start/stop
+            server_handle = _ModbusTcpServer(
+                context=tcp_context,
+                address=("0.0.0.0", port),
+                ignore_missing_slaves=False,
+            )
+            await server_handle.start()         # starts listening
+            try:
+                # Keep task alive while server runs
+                while True:
+                    await asyncio.sleep(3600)
+            finally:
+                with contextlib.suppress(Exception):
+                    await server_handle.stop()
+
+        async def run_defer_start():
+            nonlocal server_handle
+            # Older API path: get a handle via defer_start=True
+            from pymodbus.server import StartAsyncTcpServer
+            srv = await StartAsyncTcpServer(
+                context=tcp_context,
+                address=("0.0.0.0", port),
+                ignore_missing_slaves=False,
+                defer_start=True,
+            )
+            server_handle = srv
+            await srv.serve_forever()
+
+        async def run_legacy():
+            # Last-resort legacy: no handle; cancellation may not close socket on some versions.
+            # We only reach this if neither path above exists; keeping for completeness.
+            from pymodbus.server import StartAsyncTcpServer
+            await StartAsyncTcpServer(
+                context=tcp_context,
+                address=("0.0.0.0", port),
+                ignore_missing_slaves=False,
+            )
+
+        async def run():
+            try:
+                if _ModbusTcpServer is not None:
+                    await run_new_api()
+                else:
+                    try:
+                        await run_defer_start()
+                    except TypeError:
+                        await run_legacy()
+            except asyncio.CancelledError:
+                # Task cancelled during restart; ensure server is stopped
+                raise
+            except Exception as e:
+                print(f"[TCP] server crashed: {e!r}")
+                raise
+
+        t = asyncio.create_task(run(), name=f"mbtcp:{port}")
+        def _dbg(task: asyncio.Task):
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc:
+                print(f"[TCP] task crashed: {exc!r}")
+        t.add_done_callback(_dbg)
+        return t
+
+    try:
+        while True:
+            desired_port = int(S()["tcp"]["port"])
+            needs_restart = (server_task is None or server_task.done() or desired_port != current_port)
+
+            if needs_restart:
+                await _stop_task()
+                current_port = desired_port
+
+                last_err = None
+                for attempt in range(1, 6):
+                    try:
+                        server_task = await _start(current_port)
+                        print(f"[TCP] listening on 0.0.0.0:{current_port}")
+                        last_err = None
+                        break
+                    except Exception as e:
+                        last_err = e
+                        print(f"[TCP] start attempt {attempt} failed: {e!r}")
+                        await asyncio.sleep(0.3 * attempt)
+                if last_err is not None:
+                    print(f"[TCP] giving up for now: {last_err!r}")
+
+            # quick wake on poke
+            evt = tcp_reload_event or getattr(app.state, "tcp_reload_event", None)
+            if evt:
+                try:
+                    await asyncio.wait_for(evt.wait(), timeout=0.5)
+                    if evt.is_set():
+                        evt.clear()
+                except asyncio.TimeoutError:
+                    pass
+            else:
+                await asyncio.sleep(0.5)
+    finally:
+        await _stop_task()
+"""
+
+"""
+async def tcp_server_manager():
+    current_port: Optional[int] = None
+    server_obj = None          # new API object with .start()/.shutdown()/.server
+    server_task: asyncio.Task | None = None  # legacy fallback task
+
+    async def _stop_old_listener(old_port: Optional[int]):
+        nonlocal server_obj, server_task
+        # 1) Try the modern API
+        try:
+            if server_obj is not None:
+                # Best-effort graceful shutdown
+                if hasattr(server_obj, "shutdown") and callable(server_obj.shutdown):
+                    try:
+                        await server_obj.shutdown()
+                    except Exception:
+                        pass
+                # If it exposes the underlying asyncio.Server, close it explicitly
+                try:
+                    srv = getattr(server_obj, "server", None)
+                    if srv is not None:
+                        try:
+                            srv.close()
+                            await srv.wait_closed()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        finally:
+            server_obj = None
+
+        # 2) Legacy task path
+        if server_task and not server_task.done():
+            server_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await server_task
+        server_task = None
+
+        # 3) As a last resort, sweep/close any leftover FDs bound to the old port
+        if old_port is not None:
+            try:
+                _force_close_tcp_port(int(old_port))
+            except Exception as e:
+                print(f"[TCP] fd sweep error: {e}")
+        await asyncio.sleep(0.25)  # let kernel settle
+
+    async def _start_new_listener(new_port: int):
+        nonlocal server_obj, server_task
+        server_obj = None
+        server_task = None
+
+        # Try the modern path first (defer_start)
+        try:
+            srv = await StartAsyncTcpServer(
+                context=tcp_context,
+                address=("0.0.0.0", new_port),
+                ignore_missing_slaves=False,
+                defer_start=True,  # NEW: get a controllable server
+            )
+            await srv.start()
+            server_obj = srv
+            print(f"[TCP] listening on 0.0.0.0:{new_port}")
+            return
+        except TypeError:
+            # Older pymodbus that doesn't support defer_start
+            pass
+
+        # Legacy fallback: fire-and-forget task
+        async def run_legacy():
+            print("[TCP] Legacy pymodbus path in use; consider upgrading.")
+            await StartAsyncTcpServer(
+                context=tcp_context,
+                address=("0.0.0.0", new_port),
+                ignore_missing_slaves=False,
+            )
+        server_task = asyncio.create_task(run_legacy(), name=f"mbtcp:{new_port}")
+        def _dbg(task: asyncio.Task):
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc:
+                print(f"[TCP] task crashed: {exc!r}")
+        server_task.add_done_callback(_dbg)
+        print(f"[TCP] listening on 0.0.0.0:{new_port}")
+
+    try:
+        while True:
+            desired_port = int(S()["tcp"]["port"])
+
+            if current_port is None:
+                # initial bring-up
+                await _start_new_listener(desired_port)
+                current_port = desired_port
+            elif desired_port != current_port:
+                # PORT CHANGE: stop old first, then start new
+                old_port = current_port
+                await _stop_old_listener(old_port)
+                await _start_new_listener(desired_port)
+                current_port = desired_port
+
+            await asyncio.sleep(0.4)
+    finally:
+        await _stop_old_listener(current_port)
+"""
+
 async def tcp_server_manager():
     """
-    Robust Modbus TCP manager:
+    Robust Modbus TCP manager that:
       - Uses defer_start when available;
-      - On legacy pymodbus, captures ONLY the asyncio.Server created for the
-        exact Modbus port, then closes it on port change.
+      - On legacy pymodbus, captures the asyncio.Server created internally,
+        so we can close it properly (IPv4 + IPv6);
+      - As a last resort, sweeps FDs on the old port.
     """
     current_port: Optional[int] = None
-    server_obj = None
-    legacy_server: Optional[asyncio.base_events.Server] = None
-    server_task: Optional[asyncio.Task] = None
+    server_obj = None                     # modern path object (with .shutdown() / .server)
+    legacy_server: Optional[asyncio.base_events.Server] = None  # captured asyncio.Server
+    server_task: Optional[asyncio.Task] = None                  # legacy task
 
     async def _stop_old_listener(old_port: Optional[int]):
         nonlocal server_obj, legacy_server, server_task
-        # Modern path
+
+        # Modern pymodbus object
         if server_obj is not None:
             try:
                 if hasattr(server_obj, "shutdown") and callable(server_obj.shutdown):
@@ -946,13 +1329,16 @@ async def tcp_server_manager():
             try:
                 srv = getattr(server_obj, "server", None)
                 if srv is not None:
-                    srv.close()
-                    await srv.wait_closed()
+                    try:
+                        srv.close()
+                        await srv.wait_closed()
+                    except Exception:
+                        pass
             except Exception:
                 pass
             server_obj = None
 
-        # Legacy path
+        # Legacy captured asyncio.Server
         if legacy_server is not None:
             try:
                 legacy_server.close()
@@ -961,15 +1347,17 @@ async def tcp_server_manager():
                 pass
             legacy_server = None
 
+        # Legacy task (ensure it's gone)
         if server_task and not server_task.done():
             server_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await server_task
         server_task = None
 
+        # Kill any stragglers (both families)
         if old_port is not None:
             _force_close_tcp_port(int(old_port))
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.25)
 
     async def _start_new_listener(new_port: int):
         nonlocal server_obj, legacy_server, server_task
@@ -990,51 +1378,40 @@ async def tcp_server_manager():
             print(f"[TCP] listening on 0.0.0.0:{new_port}")
             return
         except TypeError:
-            pass  # legacy path
+            # defer_start not supported -> legacy path
+            pass
 
-        # ---- Legacy path (scoped, port-matching capture) ----
+        # Legacy path: monkey-patch asyncio.start_server ONCE to capture the Server
         orig_start_server = asyncio.start_server
-        captured_evt = asyncio.Event()
 
-        async def spy_start_server(client_connected_cb, host=None, port=None, *args, **kwargs):
-            # Only capture if THIS call is for the Modbus port we are starting
-            if port == new_port:
-                asyncio.start_server = orig_start_server  # restore immediately
-                srv = await orig_start_server(client_connected_cb, host, port, *args, **kwargs)
-                nonlocal legacy_server
-                legacy_server = srv
-                captured_evt.set()
-                return srv
-            # Not our server; just forward (do NOT capture)
-            return await orig_start_server(client_connected_cb, host, port, *args, **kwargs)
+        async def spy_start_server(*args, **kwargs):
+            # Restore immediately so only the first call is intercepted
+            asyncio.start_server = orig_start_server
+            srv = await orig_start_server(*args, **kwargs)
+            # Capture the Server so we can close it later
+            nonlocal legacy_server
+            legacy_server = srv
+            return srv
 
-        # Install the spy and ensure we restore it soon no matter what
         asyncio.start_server = spy_start_server
 
         async def run_legacy():
             print("[TCP] Legacy pymodbus path in use; consider upgrading.")
-            try:
-                await StartAsyncTcpServer(
-                    context=tcp_context,
-                    address=("0.0.0.0", new_port),
-                    ignore_missing_slaves=False,
-                )
-            finally:
-                # Safety: ensure spy is removed even if something throws
-                if asyncio.start_server is spy_start_server:
-                    asyncio.start_server = orig_start_server
+            await StartAsyncTcpServer(
+                context=tcp_context,
+                address=("0.0.0.0", new_port),
+                ignore_missing_slaves=False,
+            )
 
         server_task = asyncio.create_task(run_legacy(), name=f"mbtcp:{new_port}")
 
-        # Wait briefly for the capture; then make sure we restore the spy
-        try:
-            await asyncio.wait_for(captured_evt.wait(), timeout=1.5)
-        except asyncio.TimeoutError:
-            pass  # we may still be fine; just restore the spy now
-        finally:
-            if asyncio.start_server is spy_start_server:
-                asyncio.start_server = orig_start_server
-
+        def _dbg(task: asyncio.Task):
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc:
+                print(f"[TCP] task crashed: {exc!r}")
+        server_task.add_done_callback(_dbg)
         print(f"[TCP] listening on 0.0.0.0:{new_port}")
 
     try:
@@ -1046,13 +1423,14 @@ async def tcp_server_manager():
                 current_port = desired_port
             elif desired_port != current_port:
                 old_port = current_port
-                await _stop_old_listener(old_port)
+                await _stop_old_listener(old_port)   # STOP OLD FIRST
                 await _start_new_listener(desired_port)
                 current_port = desired_port
 
             await asyncio.sleep(0.4)
     finally:
         await _stop_old_listener(current_port)
+
 
 
 
