@@ -424,6 +424,10 @@
           If you lose access, hold the hardware reset button ~5s to revert to DHCP.
         </p>
         <div class="pin-err" id="user_net_err" style="min-height:18px"></div>
+       <div class="actions" style="margin-top:8px">
+  <button id="user_net_apply" class="btn primary">Apply Network</button>
+</div>
+
       </section>
 
       <div class="pin-err" id="userChangeErr" style="min-height:18px"></div>
@@ -563,7 +567,11 @@
           Si pierde acceso, mantenga presionado el botón de <i>reset</i> ~5s para volver a DHCP.
         </p>
         <div class="pin-err" id="adm_net_err" style="min-height:18px"></div>
-      </section>
+     <div class="actions" style="margin-top:8px">
+  <button id="adm_net_apply" class="btn primary">Aplicar Red</button>
+</div>
+ 
+</section>
 
       <!-- BRANDING & DEVICE (hidden for user role) -->
       <section id="secBranding" style="margin-top:16px">
@@ -819,43 +827,70 @@
   let AUTH_TOKEN = sessionStorage.getItem("auth_token") || null;
   let AUTH_SCOPE = sessionStorage.getItem("auth_scope") || null; // "gate" | "user" | "admin"
 
-  async function loadNetwork() {
-  const r = await fetch('/api/network', { headers: authHeader() });
+  // ===== NETWORK UI (prefix-aware: "user" or "adm") =====
+function getNet(prefix){
+  const pick = id => document.getElementById(`${prefix}_${id}`);
+  return {
+    curip:     pick('net_curip'),
+    modeDhcp:  pick('net_mode_dhcp'),
+    modeStatic:pick('net_mode_static'),
+    fields:    pick('net_static_fields'),
+    ip:        pick('net_ip'),
+    mask:      pick('net_mask'),
+    gw:        pick('net_gw'),
+    dns:       pick('net_dns'),
+    applyBtn:  document.getElementById(`${prefix}_net_apply`) // optional button
+  };
+}
+
+function bindNet(prefix){
+  const n = getNet(prefix);
+  if (!n.modeDhcp || !n.modeStatic) return; // form not present
+
+  const toggle = ()=>{ if (n.fields) n.fields.style.display = n.modeStatic.checked ? '' : 'none'; };
+  n.modeDhcp.onchange = toggle;
+  n.modeStatic.onchange = toggle;
+  toggle();
+
+  if (n.applyBtn) n.applyBtn.onclick = ()=>applyNet(prefix);
+}
+
+async function fillNet(prefix){
+  const n = getNet(prefix);
+  if (!n.curip) return;
+
+  const r = await apiRequest('/api/network', { noAutoLogout:true });
   const data = await r.json();
-  // current
-  document.getElementById('net-cur-if').textContent = data.current.iface || '';
-  document.getElementById('net-cur-ip').textContent = data.current.ip || '(no IP)';
-  document.getElementById('net-cur-gw').textContent = data.current.gateway || '';
-  document.getElementById('net-cur-dns').textContent = (data.current.dns||[]).join(', ');
+
+  // current (read-only)
+  n.curip.value = data.current?.ip || '—';
 
   // saved
-  document.getElementById('net-mode').value = data.saved.mode || 'dhcp';
-  document.getElementById('net-iface').value = data.saved.iface || 'eth0';
-  document.getElementById('net-addr').value = data.saved.static.address || '';
-  document.getElementById('net-mask').value = data.saved.static.netmask || '';
-  document.getElementById('net-gw').value   = data.saved.static.gateway || '';
-  document.getElementById('net-dns').value  = (data.saved.static.dns||[]).join(',');
+  const saved = data.saved || {};
+  const isStatic = (saved.mode || 'dhcp') === 'static';
+  if (n.modeDhcp)   n.modeDhcp.checked = !isStatic;
+  if (n.modeStatic) n.modeStatic.checked =  isStatic;
 
-  toggleStaticFields();
+  const st = saved.static || {};
+  if (n.ip)   n.ip.value   = st.address || '';
+  if (n.mask) n.mask.value = st.netmask || '';
+  if (n.gw)   n.gw.value   = st.gateway || '';
+  if (n.dns)  n.dns.value  = (st.dns || []).join(',');
+
+  if (n.fields) n.fields.style.display = isStatic ? '' : 'none';
 }
 
-function toggleStaticFields() {
-  const mode = document.getElementById('net-mode').value;
-  document.getElementById('net-static-fields').style.display = (mode === 'static') ? '' : 'none';
-}
-document.getElementById('net-mode').addEventListener('change', toggleStaticFields);
-
-document.getElementById('net-apply').addEventListener('click', async () => {
-  const mode = document.getElementById('net-mode').value;
-  const iface = document.getElementById('net-iface').value.trim() || 'eth0';
-  const payload = { mode, iface };
+async function applyNet(prefix){
+  const n = getNet(prefix);
+  const mode = (n.modeStatic && n.modeStatic.checked) ? 'static' : 'dhcp';
+  const payload = { mode, iface: 'eth0' };
 
   if (mode === 'static') {
     payload.static = {
-      address: document.getElementById('net-addr').value.trim(),
-      netmask: document.getElementById('net-mask').value.trim(),
-      gateway: document.getElementById('net-gw').value.trim(),
-      dns: (document.getElementById('net-dns').value.trim() || '').split(',').map(s=>s.trim()).filter(Boolean)
+      address: (n.ip?.value || '').trim(),
+      netmask: (n.mask?.value || '').trim(),
+      gateway: (n.gw?.value || '').trim(),
+      dns: (n.dns?.value || '').split(',').map(s=>s.trim()).filter(Boolean)
     };
     if (!payload.static.address || !payload.static.gateway) {
       alert('Static requires address and gateway (and subnet mask or /prefix).');
@@ -863,21 +898,17 @@ document.getElementById('net-apply').addEventListener('click', async () => {
     }
   }
 
-  try {
-    const r = await fetch('/api/network', {
-      method: 'PUT',
-      headers: { 'Content-Type':'application/json', ...authHeader() },
-      body: JSON.stringify(payload)
-    });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.detail || JSON.stringify(j));
-    alert(j.note || 'Network applied.');
-    // Refresh "current" display (may be stale if your IP changed)
-    setTimeout(loadNetwork, 1500);
-  } catch (e) {
-    alert('Failed: ' + e.message);
-  }
-});
+  const r = await apiRequest('/api/network', {
+    method: 'PUT',
+    body: JSON.stringify(payload)
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.detail || JSON.stringify(j));
+
+  alert(j.note || 'Network applied.');
+  setTimeout(()=>fillNet(prefix), 1500);
+}
+
 
 
 
@@ -1230,6 +1261,8 @@ const openUserChange = () => {
   $("oldUserPw").value = "";
   $("newUserPw").value = "";
   $("userChangeBackdrop").style.display = "flex";
+  bindNet('user');
+fillNet('user').catch(console.error);
   setTimeout(() => $("oldUserPw").focus(), 30);
 };
 const closeUserChange = () => { $("userChangeBackdrop").style.display = "none"; };
@@ -1479,14 +1512,18 @@ $("btnResetPwNo").onclick = ()=>{
   }
 
   /* ==================== SETTINGS MODAL & PIN (user/admin) ==================== */
-  const openConfigModal = (role)=>{ 
-    CURRENT_SETTINGS_ROLE = role;
-    updateSettingsVisibility();
-    $("backdrop").style.display="flex";
-    if (document.getElementById("net-mode")) {
-    loadNetwork().catch(console.error);
-  } 
-  };
+
+const openConfigModal = (role)=>{ 
+  CURRENT_SETTINGS_ROLE = role;
+  updateSettingsVisibility();
+  $("backdrop").style.display="flex";
+
+  if (role === 'admin') {
+    bindNet('adm');
+    fillNet('adm').catch(console.error);
+  }
+};
+
   const closeConfigModal = ()=>{ $("backdrop").style.display="none"; };
 
   function updateSettingsVisibility(){
