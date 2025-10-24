@@ -56,6 +56,7 @@ import contextlib
 import asyncio
 
 from typing import Optional
+import ipaddress, subprocess, shlex, re
 
 PREV_MIRROR_ID: Optional[int] = None
 PREV_EXPIRY: float = 0.0
@@ -105,6 +106,100 @@ def _seed_secret_if_missing(db, key: str, plain: str):
         db.add(Secret(key=key, value=argon2.hash(plain)))
         db.commit()
 
+
+
+
+def _mask_to_prefix(mask: str) -> int:
+    # allow "255.255.255.0" or "/24" or ""
+    mask = (mask or "").strip()
+    if not mask:
+        return None  # caller decides default
+    if mask.startswith("/"):
+        return int(mask[1:])
+    # dotted -> prefix
+    try:
+        net = ipaddress.IPv4Network(f"0.0.0.0/{mask}")
+        return int(net.prefixlen)
+    except Exception:
+        raise HTTPException(400, f"Invalid netmask '{mask}'")
+
+def _detect_primary_iface_and_ip() -> tuple[str, str]:
+    """
+    Returns (iface, ip) of the route used to reach the internet.
+    """
+    try:
+        r = subprocess.run(["ip","route","get","8.8.8.8"], capture_output=True, text=True, check=True)
+        line = r.stdout.strip().splitlines()[0]
+        # e.g. "8.8.8.8 via 192.168.1.1 dev eth0 src 192.168.1.20 ..."
+        dev = re.search(r"\bdev\s+(\S+)", line)
+        src = re.search(r"\bsrc\s+(\S+)", line)
+        iface = dev.group(1) if dev else ""
+        ip = src.group(1) if src else ""
+        return (iface, ip)
+    except Exception:
+        # fallback: pick settings iface, and try ip addr
+        iface = (S().get("network",{}) or {}).get("iface","eth0")
+        ip = ""
+        try:
+            r = subprocess.run(["ip","-4","addr","show",iface], capture_output=True, text=True)
+            m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", r.stdout)
+            if m: ip = m.group(1)
+        except Exception:
+            pass
+        return (iface, ip)
+
+def _detect_default_gateway() -> str:
+    try:
+        r = subprocess.run(["ip","route","show","default"], capture_output=True, text=True)
+        m = re.search(r"default via (\d+\.\d+\.\d+\.\d+)", r.stdout)
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+def _detect_dns() -> list[str]:
+    out = []
+    try:
+        with open("/etc/resolv.conf","r") as f:
+            for line in f:
+                if line.strip().startswith("nameserver"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        out.append(parts[1])
+    except Exception:
+        pass
+    return out
+
+def _validate_static(address: str, netmask: str, gateway: str, dns: list[str]) -> tuple[ipaddress.IPv4Interface, list[str]]:
+    try:
+        # allow address with /prefix OR with separate netmask
+        if "/" in address:
+            iface = ipaddress.IPv4Interface(address)
+        else:
+            pfx = _mask_to_prefix(netmask)
+            if pfx is None:
+                raise HTTPException(400, "Provide netmask (e.g. 255.255.255.0) or use address in CIDR form (e.g. 192.168.1.10/24)")
+            iface = ipaddress.IPv4Interface(f"{address}/{pfx}")
+    except Exception:
+        raise HTTPException(400, f"Invalid IPv4 address '{address}'")
+
+    try:
+        gw = ipaddress.IPv4Address(gateway)
+    except Exception:
+        raise HTTPException(400, f"Invalid gateway '{gateway}'")
+
+    if gw not in iface.network:
+        raise HTTPException(400, "Gateway is not in the same subnet as the static address")
+
+    dns_ok = []
+    for d in dns or []:
+        if not d: continue
+        try:
+            ipaddress.IPv4Address(d)
+            dns_ok.append(d)
+        except Exception:
+            raise HTTPException(400, f"Invalid DNS '{d}'")
+
+    return iface, dns_ok
 
 
 def _force_close_tcp_port(port: int):
@@ -358,6 +453,16 @@ def require_scope(required: str):
 SETTINGS_PATH = "settings.json"
 
 DEFAULT_SETTINGS = {
+    "network": {
+        "mode": "dhcp",          # "dhcp" (default) or "static"
+        "iface": "eth0",         # change if your primary NIC is different
+        "static": {
+            "address": "",       # e.g. "192.168.1.100"
+            "netmask": "",       # e.g. "255.255.255.0" (or leave empty if you’ll send /prefix)
+            "gateway": "",       # e.g. "192.168.1.1"
+            "dns": ["8.8.8.8","1.1.1.1"]
+        }
+    },
     "upstream": {  # master -> device on CH1 (serial params are fixed in code)
         "device_unit_id": 1,
         "poll_period_s": 1.0
@@ -389,6 +494,7 @@ DEFAULT_SETTINGS = {
     },
     "device": { "model": "" }
 }
+
 # =====================================================
 
 # ---------- Settings helpers ----------
@@ -1121,6 +1227,100 @@ async def wait_port_free(port: str, timeout: float = 5.0, probe_baud: int = 9600
 # ================== Web API & Dashboard ==================
 
 # ---------- NEW: Auth endpoints ----------
+
+@app.get("/api/network")
+def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
+    s = S().get("network", {}) or {}
+    iface_current, ip_current = _detect_primary_iface_and_ip()
+    gw_current = _detect_default_gateway()
+    dns_current = _detect_dns()
+
+    saved = {
+        "mode": s.get("mode","dhcp"),
+        "iface": s.get("iface", iface_current or "eth0"),
+        "static": {
+            "address": ((s.get("static") or {}).get("address") or ""),
+            "netmask": ((s.get("static") or {}).get("netmask") or ""),
+            "gateway": ((s.get("static") or {}).get("gateway") or ""),
+            "dns":     ((s.get("static") or {}).get("dns") or ["8.8.8.8","1.1.1.1"]),
+        }
+    }
+    return {
+        "current": {"iface": iface_current, "ip": ip_current, "gateway": gw_current, "dns": dns_current},
+        "saved": saved,
+        "note": "DHCP is default. Switching to static may disconnect your browser if IP/network changes."
+    }
+
+@app.put("/api/network")
+def api_network_put(body: Dict[str, Any] = Body(...), scope: str = Depends(require_any_scope(["admin","user"]))):
+    body = body or {}
+    mode  = str(body.get("mode","dhcp")).lower().strip()
+    iface = (body.get("iface") or (S().get("network",{}) or {}).get("iface") or "eth0").strip()
+
+    if mode not in ("dhcp","static"):
+        raise HTTPException(400, "mode must be 'dhcp' or 'static'")
+
+    if mode == "static":
+        st = body.get("static") or {}
+        address = (st.get("address") or "").strip()
+        netmask = (st.get("netmask") or "").strip()    # allow dotted or /prefix in address
+        gateway = (st.get("gateway") or "").strip()
+        dns     = st.get("dns") or []
+        iface_if, dns_ok = _validate_static(address, netmask, gateway, dns)
+        addr_cidr = str(iface_if.with_prefixlen)  # "a.b.c.d/pfx"
+
+        # persist to settings.json
+        async def _save():
+            async with SETTINGS_LOCK:
+                current = load_settings_from_disk()
+                prev = json.loads(json.dumps(current))
+                current.setdefault("network", {})
+                current["network"]["mode"]  = "static"
+                current["network"]["iface"] = iface
+                current["network"]["static"] = {
+                    "address": str(iface_if.ip),
+                    "netmask": str(ipaddress.IPv4Network(f"0.0.0.0/{iface_if.network.prefixlen}").netmask),
+                    "gateway": gateway,
+                    "dns": dns_ok or ["8.8.8.8","1.1.1.1"]
+                }
+                await save_settings_to_disk(current)
+                SETTINGS.clear(); SETTINGS.update(current)
+        asyncio.get_event_loop().run_until_complete(_save())  # we're in sync path
+
+        # apply via helper
+        dns_csv = ",".join(dns_ok) if dns_ok else ""
+        try:
+            subprocess.run(
+                ["sudo","/usr/local/bin/netcfg-apply","static",iface,addr_cidr,gateway,dns_csv],
+                check=True
+            )
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(500, f"Failed to apply static IP: {e}")
+
+        return {"ok": True, "applied": {"mode":"static","iface":iface,"address":addr_cidr,"gateway":gateway,"dns":dns_ok},
+                "note": "Applied static network. You may need to reconnect using the new IP."}
+
+    # DHCP path
+    # persist
+    async def _save_dhcp():
+        async with SETTINGS_LOCK:
+            current = load_settings_from_disk()
+            current.setdefault("network", {})
+            current["network"]["mode"]  = "dhcp"
+            current["network"]["iface"] = iface
+            await save_settings_to_disk(current)
+            SETTINGS.clear(); SETTINGS.update(current)
+    asyncio.get_event_loop().run_until_complete(_save_dhcp())
+
+    try:
+        subprocess.run(["sudo","/usr/local/bin/netcfg-apply","dhcp",iface], check=True)
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(500, f"Failed to switch to DHCP: {e}")
+
+    return {"ok": True, "applied": {"mode":"dhcp","iface":iface},
+            "note": "Switched to DHCP. The IP may change; you might need to reload the page."}
+
+
 
 @app.get("/api/runtime/serial_status")
 def serial_status():
