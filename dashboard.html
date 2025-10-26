@@ -859,26 +859,43 @@ async function fillNet(prefix){
   const n = getNet(prefix);
   if (!n.curip) return;
 
-  const r = await apiRequest('/api/network', { noAutoLogout:true });
-  const data = await r.json();
+  try {
+    const r = await apiRequest('/api/network', { noAutoLogout:true });
 
-  // current (read-only)
-  n.curip.value = data.current?.ip || '—';
+    if (!r.ok) {
+      // Don’t overwrite UI with defaults if the call failed.
+      console.warn('GET /api/network failed:', r.status);
+      return;
+    }
 
-  // saved
-  const saved = data.saved || {};
-  const isStatic = (saved.mode || 'dhcp') === 'static';
-  if (n.modeDhcp)   n.modeDhcp.checked = !isStatic;
-  if (n.modeStatic) n.modeStatic.checked =  isStatic;
+    // Only parse JSON when content-type is JSON (avoid errors on empty body)
+    let data = {};
+    const ct = r.headers.get('content-type') || '';
+    if (ct.includes('application/json')) {
+      data = await r.json().catch(()=>({}));
+    }
 
-  const st = saved.static || {};
-  if (n.ip)   n.ip.value   = st.address || '';
-  if (n.mask) n.mask.value = st.netmask || '';
-  if (n.gw)   n.gw.value   = st.gateway || '';
-  if (n.dns)  n.dns.value  = (st.dns || []).join(',');
+    // current (read-only)
+    n.curip.value = data.current?.ip || '—';
 
-  if (n.fields) n.fields.style.display = isStatic ? '' : 'none';
+    // saved
+    const saved = data.saved || {};
+    const isStatic = (saved.mode || 'dhcp') === 'static';
+    if (n.modeDhcp)   n.modeDhcp.checked = !isStatic;
+    if (n.modeStatic) n.modeStatic.checked =  isStatic;
+
+    const st = saved.static || {};
+    if (n.ip)   n.ip.value   = st.address || '';
+    if (n.mask) n.mask.value = st.netmask || '';
+    if (n.gw)   n.gw.value   = st.gateway || '';
+    if (n.dns)  n.dns.value  = (st.dns || []).join(',');
+
+    if (n.fields) n.fields.style.display = isStatic ? '' : 'none';
+  } catch (e) {
+    console.error('fillNet error:', e);
+  }
 }
+
 
 async function applyNet(prefix){
   const n = getNet(prefix);
@@ -898,16 +915,30 @@ async function applyNet(prefix){
     }
   }
 
-  const r = await apiRequest('/api/network', {
-    method: 'PUT',
-    body: JSON.stringify(payload)
-  });
-  const j = await r.json();
-  if (!r.ok) throw new Error(j.detail || JSON.stringify(j));
+  try {
+    const r = await apiRequest('/api/network', {
+      method: 'PUT',
+      // keep the user on the page even if token is stale; we’ll show a message
+      noAutoLogout: true,
+      body: JSON.stringify(payload)
+    });
 
-  alert(j.note || 'Network applied.');
-  setTimeout(()=>fillNet(prefix), 1500);
+    // Safely parse JSON only if present & JSON
+    let j = {};
+    const ct = r.headers.get('content-type') || '';
+    if (ct.includes('application/json')) {
+      try { j = await r.json(); } catch {}
+    }
+    if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+
+    alert(j.note || 'Network applied.');
+    // Refresh the values shown in the form (may be stale for ~1–2s)
+    setTimeout(()=>fillNet(prefix).catch(console.error), 1500);
+  } catch (e) {
+    alert('Failed to apply network: ' + (e && e.message ? e.message : e));
+  }
 }
+
 
 
 
@@ -1662,15 +1693,31 @@ document.addEventListener("keydown", (e) => {
   const payload = (CURRENT_SETTINGS_ROLE==='admin') ? {...basePayload, ...adminExtras} : basePayload;
 
   try{
-    const r = await apiRequest("/api/settings", {
-  method:"PUT",
-  body: JSON.stringify(payload)
-});
+  const r = await apiRequest("/api/settings", {
+    method:"PUT",
+    noAutoLogout: true,
+    body: JSON.stringify(payload)
+  });
 
-    const js=await r.json();
-    if(js.ok){ await fillSettings(); toast(t("saved")); closeConfigModal(); }
-    else{ toast(js.detail||t("saveFail")); }
-  }catch(e){ toast(t("saveFail")); }
+  if (r.status === 401) {
+    setAuth(null, null);
+    showGate();
+    toast(LANG==="es" ? "Sesión expirada. Ingrese PIN de Admin." : "Session expired. Enter Admin PIN.");
+    return;
+  }
+
+  const js = await r.json().catch(()=>({}));
+  if (r.ok && js.ok) {
+    await fillSettings();
+    toast(t("saved"));
+    closeConfigModal();
+  } else {
+    toast(js.detail || t("saveFail"));
+  }
+} catch(e){ 
+  toast(t("saveFail")); 
+}
+
   finally{ btn.disabled=false; btn.textContent=original; }
 };
 

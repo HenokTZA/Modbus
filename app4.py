@@ -58,6 +58,10 @@ import asyncio
 from typing import Optional
 import ipaddress, subprocess, shlex, re
 
+from fastapi import Body, HTTPException
+import asyncio, ipaddress, subprocess, json
+from typing import Any, Dict
+
 PREV_MIRROR_ID: Optional[int] = None
 PREV_EXPIRY: float = 0.0
 
@@ -1251,6 +1255,7 @@ def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
         "note": "DHCP is default. Switching to static may disconnect your browser if IP/network changes."
     }
 
+"""
 @app.put("/api/network")
 def api_network_put(body: Dict[str, Any] = Body(...), scope: str = Depends(require_any_scope(["admin","user"]))):
     body = body or {}
@@ -1319,8 +1324,93 @@ def api_network_put(body: Dict[str, Any] = Body(...), scope: str = Depends(requi
 
     return {"ok": True, "applied": {"mode":"dhcp","iface":iface},
             "note": "Switched to DHCP. The IP may change; you might need to reload the page."}
+"""
 
+@app.put("/api/network")
+async def api_network_put(body: Dict[str, Any] = Body(...)):
+    body = body or {}
 
+    mode  = str(body.get("mode", "dhcp")).lower().strip()
+    iface = (
+        body.get("iface")
+        or ((S().get("network") or {}).get("iface"))
+        or "eth0"
+    )
+
+    if mode not in ("dhcp", "static"):
+        raise HTTPException(status_code=400, detail="mode must be 'dhcp' or 'static'")
+
+    # ---------- STATIC ----------
+    if mode == "static":
+        st = body.get("static") or {}
+        address = (st.get("address") or "").strip()
+        netmask = (st.get("netmask") or "").strip()     # allow dotted or /prefix
+        gateway = (st.get("gateway") or "").strip()
+        dns     = st.get("dns") or []
+
+        # your validator should return (IPv4Interface, list[str] or None)
+        iface_if, dns_ok = _validate_static(address, netmask, gateway, dns)
+        addr_cidr = str(iface_if.with_prefixlen)  # "a.b.c.d/pfx"
+
+        # persist to settings.json (under the async lock)
+        async with SETTINGS_LOCK:
+            current = load_settings_from_disk()
+            current.setdefault("network", {})
+            current["network"]["mode"]  = "static"
+            current["network"]["iface"] = iface
+            current["network"]["static"] = {
+                "address": str(iface_if.ip),
+                "netmask": str(iface_if.network.netmask),
+                "gateway": gateway,
+                "dns": dns_ok or ["8.8.8.8", "1.1.1.1"],
+            }
+            await save_settings_to_disk(current)
+            SETTINGS.clear()
+            SETTINGS.update(current)
+
+        # apply via helper script
+        dns_csv = ",".join(dns_ok) if dns_ok else ""
+        try:
+            subprocess.run(
+                ["sudo", "/usr/local/bin/netcfg-apply", "static", iface, addr_cidr, gateway, dns_csv],
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(status_code=500, detail=f"Failed to apply static IP: {e}")
+
+        return {
+            "ok": True,
+            "applied": {
+                "mode": "static",
+                "iface": iface,
+                "address": str(iface_if.ip),
+                "netmask": str(iface_if.network.netmask),
+                "gateway": gateway,
+                "dns": dns_ok,
+            },
+            "note": "Applied static network. You may need to reconnect to the new IP.",
+        }
+
+    # ---------- DHCP ----------
+    async with SETTINGS_LOCK:
+        current = load_settings_from_disk()
+        current.setdefault("network", {})
+        current["network"]["mode"]  = "dhcp"
+        current["network"]["iface"] = iface
+        await save_settings_to_disk(current)
+        SETTINGS.clear()
+        SETTINGS.update(current)
+
+    try:
+        subprocess.run(["sudo", "/usr/local/bin/netcfg-apply", "dhcp", iface], check=True)
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to switch to DHCP: {e}")
+
+    return {
+        "ok": True,
+        "applied": {"mode": "dhcp", "iface": iface},
+        "note": "Switched to DHCP. The IP may change; you may lose connection.",
+    }
 
 @app.get("/api/runtime/serial_status")
 def serial_status():
