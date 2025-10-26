@@ -1070,7 +1070,19 @@ async function changePin(role, oldPin, newPin){
     "LAST_TEST_FINAL_BATT_V","FLOAT_CURRENT_SETPOINT_PbCa_A","NUM_CELLS_NiCd","TIMER_HOURS_NiCd","SERIAL_NUMBER_raw"
   ];
 
-  const $ = (id)=>document.getElementById(id);
+  // Safe element getter: never throws if the ID is missing
+const $ = (id)=>{
+  const el = document.getElementById(id);
+  if (el) return el;
+  // Return a no-op proxy so .textContent=, .onclick=, .addEventListener(...) won't crash
+  const noop = ()=>{};
+  return new Proxy(noop, {
+    get: () => noop,      // $("x").addEventListener is a no-op fn
+    set: () => true,      // $("x").textContent = "…" won't throw
+    apply: () => undefined
+  });
+};
+
   const toast = (msg)=>{ const t=$("toast"); t.textContent=msg; t.style.display="block"; setTimeout(()=>t.style.display="none", 2200); };
   const F=(n,u)=>typeof n==="number"&&isFinite(n)?n.toFixed(1)+" "+(u||""):"--";
   const pill2=(text,color)=>`<span class="pill2 ${color}">${text}</span>`;
@@ -1586,6 +1598,7 @@ const openConfigModal = (role)=>{
   CURRENT_SETTINGS_ROLE = role;
   updateSettingsVisibility();
   $("backdrop").style.display="flex";
+ch2ApplyModeUI();
 
   if (role === 'admin') {
     bindNet('adm');
@@ -1726,7 +1739,7 @@ document.addEventListener("keydown", (e) => {
     // keep only Unit1 (1-based) editable under TCP
     local_units: { unit1_id: +$("tcp_unit1").value },
     // fixed HR window 0..23 (24 regs)
-    hr: { start: 0, count: 24 }
+    hr: { start: 0, count: 24 },
     // ===== NEW: CH2 mode + DNP3 addresses
   ch2: (()=>{
     const mode = ($("ch2_mode")?.value || "modbus").toLowerCase();
