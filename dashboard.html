@@ -495,19 +495,42 @@
         </div>
       </section>
 
-      <h3 id="i.mirTitle" style="margin-top:16px">RTU Espejo (CH2)</h3>
-      <div class="grid">
-        <div>
-          <label id="i.mirSlave">ID de Esclavo</label>
-          <input id="mir_slave" type="number" min="1" max="247" placeholder="2">
-        </div>
-        <div><label id="i.mirBaud">Baudios</label><input id="mir_baud" type="number" placeholder="9600"></div>
-        <div><label id="i.mirParity">Paridad</label>
-          <select id="mir_parity"><option>N</option><option>E</option><option>O</option></select>
-        </div>
-        <div><label id="i.mirStop">Bits de parada</label><input id="mir_stop" type="number" placeholder="1" min="1" max="2"></div>
-        <div><label id="i.mirByte">Tamaño de byte</label><input id="mir_byte" type="number" placeholder="8" min="5" max="8"></div>
-      </div>
+    <h3 style="margin-top:16px">CH2 Protocol</h3>
+<div class="grid">
+  <div>
+    <label>Protocol</label>
+    <select id="ch2_mode">
+      <option value="modbus">Modbus RTU (Mirror)</option>
+      <option value="dnp3">DNP3 Outstation</option>
+    </select>
+  </div>
+</div>
+
+    <h3 id="i.mirTitle" style="margin-top:8px">CH2 Serial (shared)</h3>
+<div class="grid">
+  <div id="row_modbus_sid">
+    <label id="i.mirSlave">Modbus Slave ID</label>
+    <input id="mir_slave" type="number" min="1" max="247" placeholder="2">
+  </div>
+
+  <div id="row_dnp3_oaddr" style="display:none">
+    <label>DNP3 Outstation Addr</label>
+    <input id="dnp3_outstation" type="number" min="0" max="65519" placeholder="100">
+  </div>
+  <div id="row_dnp3_maddr" style="display:none">
+    <label>DNP3 Master Addr</label>
+    <input id="dnp3_master" type="number" min="0" max="65519" placeholder="1">
+  </div>
+
+  <div><label id="i.mirBaud">Baudios</label><input id="mir_baud" type="number" placeholder="9600"></div>
+  <div><label id="i.mirParity">Paridad</label>
+    <select id="mir_parity"><option>N</option><option>E</option><option>O</option></select>
+  </div>
+  <div><label id="i.mirStop">Bits de parada</label><input id="mir_stop" type="number" placeholder="1" min="1" max="2"></div>
+  <div><label id="i.mirByte">Tamaño de byte</label><input id="mir_byte" type="number" placeholder="8" min="5" max="8"></div>
+</div>
+
+      
 
       <h3 id="i.tcpTitle" style="margin-top:16px">Esclavo TCP</h3>
       <div class="grid">

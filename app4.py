@@ -275,6 +275,21 @@ def _filter_user_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(lu_in, dict) and "unit1_id" in lu_in:
         out["local_units"] = {"unit1_id": lu_in["unit1_id"]}
 
+    # Allow switching CH2 mode + DNP3 link addresses
+    ch2 = payload.get("ch2") or {}
+    if isinstance(ch2, dict):
+        out_ch2 = {}
+        if "mode" in ch2:
+            out_ch2["mode"] = ch2["mode"]
+        dnp3 = ch2.get("dnp3") or {}
+        if isinstance(dnp3, dict):
+            dd = {}
+            if "outstation_addr" in dnp3: dd["outstation_addr"] = dnp3["outstation_addr"]
+            if "master_addr"     in dnp3: dd["master_addr"]     = dnp3["master_addr"]
+            if dd: out_ch2["dnp3"] = dd
+        if out_ch2: out["ch2"] = out_ch2
+
+
     # user cannot change: upstream, hr, branding, device, unit0_id
     return out
 
@@ -347,6 +362,12 @@ bearer = HTTPBearer(auto_error=True)
 def issue_token(scope: str, hours: int = 8) -> str:
     payload = {"scope": scope, "exp": datetime.utcnow() + timedelta(hours=hours)}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+def CH2_MODE() -> str:
+    try:
+        return (S().get("ch2", {}) or {}).get("mode", "modbus")
+    except Exception:
+        return "modbus"
 
 def require_scopes(*allowed: str):
     def _inner(creds: HTTPAuthorizationCredentials = Depends(bearer)) -> str:
@@ -457,6 +478,13 @@ def require_scope(required: str):
 SETTINGS_PATH = "settings.json"
 
 DEFAULT_SETTINGS = {
+    "ch2": {                    # NEW: what to run on RS485 CH2
+        "mode": "modbus",       # "modbus" or "dnp3"
+        "dnp3": {
+            "outstation_addr": 100,   # DNP3 link-layer outstation address
+            "master_addr": 1          # master address to accept
+        }
+    },
     "network": {
         "mode": "dhcp",          # "dhcp" (default) or "static"
         "iface": "eth0",         # change if your primary NIC is different
@@ -791,11 +819,8 @@ async def _write_both_views(regs: List[int]):
 
 import sys, subprocess, contextlib
 
+"""
 async def mirror_sidecar_supervisor():
-    """
-    Spawns/kills mirror_sidecar.py with the requested serial params.
-    Streams HR snapshots to it via JSON lines over stdin.
-    """
     child_proc: Optional[asyncio.subprocess.Process] = None
     child_stdin: Optional[asyncio.StreamWriter] = None
     current_cfg: Optional[dict] = None
@@ -901,6 +926,143 @@ async def mirror_sidecar_supervisor():
             await _initial_snapshot()
 
         # coalesce & send latest snapshot if queued
+        if MIRROR_QUEUE is not None and not MIRROR_QUEUE.empty():
+            last = None
+            while not MIRROR_QUEUE.empty():
+                last = await MIRROR_QUEUE.get()
+            if last is not None:
+                await _send_snapshot(last)
+
+        await asyncio.sleep(0.05)
+"""
+
+async def ch2_supervisor():
+    """
+    Owns the RS485 CH2 process. Depending on S()['ch2']['mode'], it will spawn:
+      - mirror_sidecar.py  (Modbus RTU mirror)
+      - dnp3_sidecar.py    (DNP3 outstation)
+    It streams HR snapshots to the child via JSON lines: {"op":"snap","values":[...]}
+    """
+    child_proc: Optional[asyncio.subprocess.Process] = None
+    child_stdin: Optional[asyncio.StreamWriter] = None
+    current_cfg: Optional[dict] = None  # includes mode + serial + ids
+    child_path_modbus = str(Path(__file__).parent / "mirror_sidecar.py")
+    child_path_dnp3   = str(Path(__file__).parent / "dnp3_sidecar.py")
+
+    async def _stop_child():
+        nonlocal child_proc, child_stdin
+        if child_proc:
+            with contextlib.suppress(Exception):
+                child_proc.terminate()
+            try:
+                await asyncio.wait_for(child_proc.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                with contextlib.suppress(Exception):
+                    child_proc.kill()
+            child_proc = None
+        if child_stdin:
+            with contextlib.suppress(Exception):
+                child_stdin.close()
+            child_stdin = None
+        await asyncio.sleep(0.1)
+
+    async def _start_child(cfg: dict):
+        nonlocal child_proc, child_stdin
+        mode = cfg["mode"]
+        if mode == "modbus":
+            args = [
+                sys.executable, "-u", child_path_modbus,
+                "--port", MIRROR_CH2_PORT,
+                "--baudrate", str(cfg["baudrate"]),
+                "--parity",   str(cfg["parity"]).upper()[:1],
+                "--stopbits", str(cfg["stopbits"]),
+                "--bytesize", str(cfg["bytesize"]),
+                "--slave-id", str(cfg["slave_id"]),
+                "--count",    str(S()["hr"]["count"]),
+            ]
+        else:  # dnp3
+            args = [
+                sys.executable, "-u", child_path_dnp3,
+                "--port", MIRROR_CH2_PORT,
+                "--baudrate", str(cfg["baudrate"]),
+                "--parity",   str(cfg["parity"]).upper()[:1],
+                "--stopbits", str(cfg["stopbits"]),
+                "--bytesize", str(cfg["bytesize"]),
+                "--outstation", str(cfg["outstation_addr"]),
+                "--master",     str(cfg["master_addr"]),
+                "--count",      str(S()["hr"]["count"]),
+            ]
+        child_proc = await asyncio.create_subprocess_exec(
+            *args, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        child_stdin = child_proc.stdin
+        print(f"[CH2 {mode}] spawned pid={child_proc.pid} cfg={cfg}")
+
+    async def _send_snapshot(regs: List[int]):
+        nonlocal child_stdin
+        if not child_stdin:
+            return
+        msg = {"op": "snap", "values": [int(x) & 0xFFFF for x in regs]}
+        data = (json.dumps(msg) + "\n").encode()
+        child_stdin.write(data)
+        with contextlib.suppress(Exception):
+            await child_stdin.drain()
+
+    def _desired_cfg() -> dict:
+        mr = (S().get("mirror_rtu", {}) or {})
+        ch2 = (S().get("ch2", {}) or {})
+        dnp = (ch2.get("dnp3", {}) or {})
+        return {
+            "mode": str(ch2.get("mode", "modbus")).lower(),
+            "baudrate": int(mr.get("baudrate", 9600)),
+            "parity":   str(mr.get("parity", "N")),
+            "stopbits": int(mr.get("stopbits", 1)),
+            "bytesize": int(mr.get("bytesize", 8)),
+            "slave_id": int(mr.get("slave_id", (S().get("local_units", {}) or {}).get("unit1_id", 2))),
+            "outstation_addr": int(dnp.get("outstation_addr", 100)),
+            "master_addr":     int(dnp.get("master_addr", 1)),
+        }
+
+    async def _initial_snapshot():
+        try:
+            regs = await snapshot_regs()
+            await _send_snapshot(regs)
+        except Exception:
+            pass
+
+    # kick first start
+    evt = mirror_reload_event or getattr(app.state, "mirror_reload_event", None)
+    if evt: evt.set()
+
+    while True:
+        # Wait for a poke or tick
+        evt = mirror_reload_event or getattr(app.state, "mirror_reload_event", None)
+        if evt:
+            try:
+                await asyncio.wait_for(evt.wait(), timeout=0.5)
+                if evt.is_set(): evt.clear()
+            except asyncio.TimeoutError:
+                pass
+        else:
+            await asyncio.sleep(0.5)
+
+        desired = _desired_cfg()
+        need_restart = (
+            (current_cfg != desired) or
+            (child_proc is None) or
+            (child_proc.returncode is not None)
+        )
+        if need_restart:
+            await _stop_child()
+            # (optional) prime serial like before if you want:
+            # await prime_serial_port(desired)
+            await _start_child(desired)
+            current_cfg = desired
+            await asyncio.sleep(0.2)
+            await _initial_snapshot()
+
+        # coalesce & send latest snapshot
         if MIRROR_QUEUE is not None and not MIRROR_QUEUE.empty():
             last = None
             while not MIRROR_QUEUE.empty():
@@ -1232,6 +1394,21 @@ async def wait_port_free(port: str, timeout: float = 5.0, probe_baud: int = 9600
 
 # ---------- NEW: Auth endpoints ----------
 
+@app.get("/api/runtime/serial_status")
+def serial_status():
+    mr = (S().get("mirror_rtu", {}) or {})
+    return {
+        "port": MIRROR_CH2_PORT,
+        "mode": CH2_MODE(),   # NEW
+        "configured": {
+            "baudrate": int(mr.get("baudrate", 9600)),
+            "parity":   str(mr.get("parity", "N")).upper()[:1],
+            "stopbits": int(mr.get("stopbits", 1)),
+            "bytesize": int(mr.get("bytesize", 8)),
+        }
+    }
+
+
 @app.get("/api/network")
 def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
     s = S().get("network", {}) or {}
@@ -1255,79 +1432,8 @@ def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
         "note": "DHCP is default. Switching to static may disconnect your browser if IP/network changes."
     }
 
-"""
 @app.put("/api/network")
-def api_network_put(body: Dict[str, Any] = Body(...), scope: str = Depends(require_any_scope(["admin","user"]))):
-    body = body or {}
-    mode  = str(body.get("mode","dhcp")).lower().strip()
-    iface = (body.get("iface") or (S().get("network",{}) or {}).get("iface") or "eth0").strip()
-
-    if mode not in ("dhcp","static"):
-        raise HTTPException(400, "mode must be 'dhcp' or 'static'")
-
-    if mode == "static":
-        st = body.get("static") or {}
-        address = (st.get("address") or "").strip()
-        netmask = (st.get("netmask") or "").strip()    # allow dotted or /prefix in address
-        gateway = (st.get("gateway") or "").strip()
-        dns     = st.get("dns") or []
-        iface_if, dns_ok = _validate_static(address, netmask, gateway, dns)
-        addr_cidr = str(iface_if.with_prefixlen)  # "a.b.c.d/pfx"
-
-        # persist to settings.json
-        async def _save():
-            async with SETTINGS_LOCK:
-                current = load_settings_from_disk()
-                prev = json.loads(json.dumps(current))
-                current.setdefault("network", {})
-                current["network"]["mode"]  = "static"
-                current["network"]["iface"] = iface
-                current["network"]["static"] = {
-                    "address": str(iface_if.ip),
-                    "netmask": str(ipaddress.IPv4Network(f"0.0.0.0/{iface_if.network.prefixlen}").netmask),
-                    "gateway": gateway,
-                    "dns": dns_ok or ["8.8.8.8","1.1.1.1"]
-                }
-                await save_settings_to_disk(current)
-                SETTINGS.clear(); SETTINGS.update(current)
-        asyncio.get_event_loop().run_until_complete(_save())  # we're in sync path
-
-        # apply via helper
-        dns_csv = ",".join(dns_ok) if dns_ok else ""
-        try:
-            subprocess.run(
-                ["sudo","/usr/local/bin/netcfg-apply","static",iface,addr_cidr,gateway,dns_csv],
-                check=True
-            )
-        except subprocess.CalledProcessError as e:
-            raise HTTPException(500, f"Failed to apply static IP: {e}")
-
-        return {"ok": True, "applied": {"mode":"static","iface":iface,"address":addr_cidr,"gateway":gateway,"dns":dns_ok},
-                "note": "Applied static network. You may need to reconnect using the new IP."}
-
-    # DHCP path
-    # persist
-    async def _save_dhcp():
-        async with SETTINGS_LOCK:
-            current = load_settings_from_disk()
-            current.setdefault("network", {})
-            current["network"]["mode"]  = "dhcp"
-            current["network"]["iface"] = iface
-            await save_settings_to_disk(current)
-            SETTINGS.clear(); SETTINGS.update(current)
-    asyncio.get_event_loop().run_until_complete(_save_dhcp())
-
-    try:
-        subprocess.run(["sudo","/usr/local/bin/netcfg-apply","dhcp",iface], check=True)
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(500, f"Failed to switch to DHCP: {e}")
-
-    return {"ok": True, "applied": {"mode":"dhcp","iface":iface},
-            "note": "Switched to DHCP. The IP may change; you might need to reload the page."}
-"""
-
-@app.put("/api/network")
-async def api_network_put(body: Dict[str, Any] = Body(...)):
+asyncc def api_network_put(body: Dict[str, Any] = Body(...)):
     body = body or {}
 
     mode  = str(body.get("mode", "dhcp")).lower().strip()
@@ -1648,6 +1754,15 @@ async def get_settings():
         "poll_period_s":  up.get("poll_period_s", 1.0),
     }
     mr = s.get("mirror_rtu", {}) or {}
+    ch2 = s.get("ch2", {}) or {}
+    dnp = ch2.get("dnp3", {}) or {}
+    s["ch2"] = {
+        "mode": ch2.get("mode", "modbus"),
+        "dnp3": {
+            "outstation_addr": int(dnp.get("outstation_addr", 100)),
+            "master_addr":     int(dnp.get("master_addr", 1)),
+        }
+    }
     s["mirror_rtu"] = {
         "slave_id": mr.get("slave_id", (s.get("local_units", {}) or {}).get("unit1_id", 2)),
         "baudrate": mr.get("baudrate", 9600),
@@ -1705,6 +1820,22 @@ async def put_settings(
             except Exception:
                 raise HTTPException(status_code=400, detail="tcp.port must be an integer")
         payload["tcp"] = tcp_out
+
+    # ---- sanitize ch2 (mode + dnp3 addrs)
+    if isinstance(payload.get("ch2"), dict):
+        ch2_in  = payload["ch2"]
+        ch2_out: Dict[str, Any] = {}
+        if "mode" in ch2_in:
+            mode = str(ch2_in["mode"]).lower()
+            if mode not in ("modbus", "dnp3"):
+                raise HTTPException(400, "ch2.mode must be 'modbus' or 'dnp3'")
+            ch2_out["mode"] = mode
+        if isinstance(ch2_in.get("dnp3"), dict):
+            di = ch2_in["dnp3"]; do: Dict[str, Any] = {}
+            if "outstation_addr" in di: do["outstation_addr"] = int(di["outstation_addr"])
+            if "master_addr"     in di: do["master_addr"]     = int(di["master_addr"])
+            ch2_out["dnp3"] = do
+        payload["ch2"] = ch2_out
 
 
     async with SETTINGS_LOCK:
@@ -1782,6 +1913,17 @@ async def put_settings(
     if need_rebuild:
         await rebuild_datastores_and_context()
 
+    # after you compute need_rebuild etc., add:
+    prev_mode = (prev.get("ch2", {}) or {}).get("mode", "modbus")
+    new_mode  = (S().get("ch2",  {}) or {}).get("mode", "modbus")
+    mode_changed = (prev_mode != new_mode)
+
+    # serial params changed? (you already have mirror_serial_changed)
+    if mirror_serial_changed or mode_changed:
+        evt = getattr(app.state, "mirror_reload_event", None)
+        if evt: evt.set()
+
+
     # ----- only poke the RTU manager if SERIAL parameters changed (NOT slave_id)
     prev_mr = (prev.get("mirror_rtu", {}) or {})
     new_mr  = (S().get("mirror_rtu", {}) or {})
@@ -1829,7 +1971,7 @@ async def main():
     await asyncio.gather(
         poll_upstream_and_update_cache(),
         tcp_server_manager(),
-        mirror_sidecar_supervisor(),
+        ch2_supervisor(),
         start_web(),
         settings_auto_reload(),
     )
