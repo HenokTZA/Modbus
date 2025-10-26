@@ -866,6 +866,21 @@ function getNet(prefix){
   };
 }
 
+/* ===== CH2 mode UI toggle (Modbus vs DNP3) ===== */
+function ch2ApplyModeUI() {
+  const sel = document.getElementById("ch2_mode");
+  if (!sel) return;
+  const mode = (sel.value || "modbus").toLowerCase();
+  const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? "" : "none"; };
+
+  // Modbus-only row
+  show("row_modbus_sid", mode === "modbus");
+  // DNP3-only rows
+  show("row_dnp3_oaddr", mode === "dnp3");
+  show("row_dnp3_maddr", mode === "dnp3");
+}
+
+
 function bindNet(prefix){
   const n = getNet(prefix);
   if (!n.modeDhcp || !n.modeStatic) return; // form not present
@@ -1654,6 +1669,8 @@ document.addEventListener("keydown", (e) => {
     const m = js.mirror_rtu || {};
     const tcfg = js.tcp || {};
     const lu = js.local_units || {};
+    const ch2 = js.ch2        || {};               // NEW
+  const dnp = (ch2.dnp3     || {});              // NEW
     $("tcp_unit1").value = (lu.unit1_id ?? 2);
     const hr = js.hr || {};
     const b = js.branding || {};
@@ -1664,9 +1681,17 @@ document.addEventListener("keydown", (e) => {
     $("mir_slave").value=(m.slave_id ?? (lu.unit1_id ?? 2)); $("mir_baud").value=m.baudrate; $("mir_parity").value=m.parity;
     $("mir_stop").value=m.stopbits; $("mir_byte").value=m.bytesize;
     $("tcp_port").value=tcfg.port;
+ 
+// ===== NEW: CH2 mode + DNP3 addrs
+  if ($("ch2_mode")) $("ch2_mode").value = (ch2.mode || "modbus");
+  if ($("dnp3_outstation")) $("dnp3_outstation").value = (dnp.outstation_addr ?? 100);
+  if ($("dnp3_master"))     $("dnp3_master").value     = (dnp.master_addr     ?? 1);
+  ch2ApplyModeUI(); // reflect in UI
+
     $("brand_phone").value=b.phone||""; $("brand_email").value=b.email||"";
     $("brand_youtube").value=b.youtube||""; $("brand_logo").value=b.logo_url||"";
     $("brand_qr").value=b.qr_url||""; $("device_model").value=d.model||"";
+    $("device_model").value = d.model||"";
     applyModelLine(d.model||"CEA", "");
   }
   $("btnReload").onclick = async ()=>{ await fillSettings(); toast(t("reloaded")); };
@@ -1702,6 +1727,18 @@ document.addEventListener("keydown", (e) => {
     local_units: { unit1_id: +$("tcp_unit1").value },
     // fixed HR window 0..23 (24 regs)
     hr: { start: 0, count: 24 }
+    // ===== NEW: CH2 mode + DNP3 addresses
+  ch2: (()=>{
+    const mode = ($("ch2_mode")?.value || "modbus").toLowerCase();
+    const out = { mode };
+    if (mode === "dnp3") {
+      out.dnp3 = {
+        outstation_addr: +($("dnp3_outstation")?.value || 100),
+        master_addr:     +($("dnp3_master")?.value     || 1),
+      };
+    }
+    return out;
+  })()
   };
 
   // Admin can also change branding/device; DO NOT touch local_units/hr here
@@ -1812,6 +1849,10 @@ function initPasswordToggles(){
  document.addEventListener("DOMContentLoaded", async ()=>{
 
   applyI18nStatic();
+  // NEW: attach CH2 mode change handler and render initial visibility
+  const ch2ModeEl = document.getElementById("ch2_mode");
+  if (ch2ModeEl) ch2ModeEl.addEventListener("change", ch2ApplyModeUI);
+  ch2ApplyModeUI(); // initial state
   $("gateBtn").textContent = t("gateEnter");
   await checkGate();                    // will show the gate if not authed
 if (AUTH_TOKEN) { await fillSettings(); }

@@ -1433,7 +1433,7 @@ def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
     }
 
 @app.put("/api/network")
-asyncc def api_network_put(body: Dict[str, Any] = Body(...)):
+async def api_network_put(body: Dict[str, Any] = Body(...)):
     body = body or {}
 
     mode  = str(body.get("mode", "dhcp")).lower().strip()
