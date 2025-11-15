@@ -1552,45 +1552,15 @@ $("btnResetPwNo").onclick = ()=>{
   }
 
   async function tickTiles(){
-  try{
-    const r = await apiRequest("/api/hr", { method:"GET", noAutoLogout:true });
-    if (!r.ok) return;                       // bail quietly if 401/500 while not logged in
-    const js = await r.json().catch(()=>({}));
-    const s  = js.scaled || {};
-
-    $("vb").textContent = F(s.BATTERY_VOLTAGE_V, I("units").vdc);
-    $("vl").textContent = F(s.LOAD_VOLTAGE_V,    I("units").vdc);
-    $("ib").textContent = F(s.BATTERY_CURRENT_A, I("units").a);
-    $("il").textContent = F(s.LOAD_CURRENT_A,    I("units").a);
-    $("it").textContent = F(s.TOTAL_CURRENT_A,   I("units").a);
-    $("ta").textContent = F(s.AMBIENT_TEMP_C,    I("units").c);
-    $("m").textContent  = t("statusMode")+": "+(js.mode||"--");
-    $("t").textContent  = t("statusLast")+": "+new Date().toLocaleTimeString();
-
-    const raw = js.raw || [];
-    const serialRaw = (raw.length>23 ? raw[23] : "");
-    const base = $("modelLine").dataset.base || t("modelBase",{model:"CEA"});
-    $("modelLine").textContent = base + (serialRaw!=="" ? serialRaw : "—");
-
-    const tb = document.querySelector("#tbl tbody");
-    if (tb) {
-      tb.innerHTML = "";
-      names.forEach((nm,i)=>{
-        const tr=document.createElement("tr");
-        const td=(x)=>{const d=document.createElement("td"); d.textContent=x; return d;};
-        const nmLabel = (I("regNames") && I("regNames")[nm]) || nm;
-        tr.appendChild(td(i));
-        tr.appendChild(td(nmLabel));
-        tr.appendChild(td(raw[i]??""));
-        tr.appendChild(td(typeof s[nm]==="number"?s[nm]:""));
-        tb.appendChild(tr);
-      });
-    }
-  }catch(e){
-    // swallow to keep UI alive
-  }
-}
-
+    try{
+      const r=await fetch("/api/hr"); const js=await r.json();
+      const s=js.scaled||{};
+      $("vb").textContent=F(s.BATTERY_VOLTAGE_V, I("units").vdc);
+      $("vl").textContent=F(s.LOAD_VOLTAGE_V, I("units").vdc);
+      $("ib").textContent=F(s.BATTERY_CURRENT_A, I("units").a);
+      $("il").textContent=F(s.LOAD_CURRENT_A, I("units").a);
+      $("it").textContent=F(s.TOTAL_CURRENT_A, I("units").a);
+      $("ta").textContent=F(
 
   /* ==================== SETTINGS MODAL & PIN (user/admin) ==================== */
 

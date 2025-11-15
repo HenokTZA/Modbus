@@ -1782,6 +1782,12 @@ async def put_settings(
 
     payload = payload or {}
 
+    # put this right after you read the request JSON and current settings
+    mirror_serial_changed: bool = False
+    mode_changed: bool = False
+    dnp_changed: bool = False  # if you want to watch DNP3 addr changes
+
+
     if scope == "user":
         payload = _filter_user_payload(payload)
         # If nothing user-changeable was sent, just acknowledge.
@@ -1938,6 +1944,102 @@ async def put_settings(
 
     return JSONResponse({"ok": True})
 
+"""
+from fastapi import HTTPException
+from fastapi.responses import JSONResponse
+
+@app.put("/api/settings")
+async def put_settings(req: Request, user=Depends(require_admin_or_user)):
+    body = await req.json()
+
+    # Load current config (adapt to your storage)
+    cfg = load_settings()  # e.g. a dict
+
+    # ---- default flags so we can safely check them later
+    mirror_serial_changed: bool = False
+    mode_changed: bool = False
+    dnp_changed: bool = False
+
+    # ---- Upstream
+    if "upstream" in body:
+        cfg.setdefault("upstream", {}).update({
+            "device_unit_id": int(body["upstream"].get("device_unit_id", cfg["upstream"].get("device_unit_id", 1))),
+            "poll_period_s": float(body["upstream"].get("poll_period_s",  cfg["upstream"].get("poll_period_s", 1.0))),
+        })
+
+    # ---- Mirror serial (CH2 UART & slave id)
+    if "mirror_rtu" in body:
+        old_m = cfg.get("mirror_rtu", {})
+        new_m = {
+            "baudrate": int(body["mirror_rtu"].get("baudrate", old_m.get("baudrate", 9600))),
+            "parity":   str(body["mirror_rtu"].get("parity",   old_m.get("parity", "N"))),
+            "stopbits": int(body["mirror_rtu"].get("stopbits", old_m.get("stopbits", 1))),
+            "bytesize": int(body["mirror_rtu"].get("bytesize", old_m.get("bytesize", 8))),
+            "slave_id": int(body["mirror_rtu"].get("slave_id", old_m.get("slave_id", 2))),
+        }
+        mirror_serial_changed = any(new_m[k] != old_m.get(k) for k in new_m.keys())
+        cfg["mirror_rtu"] = {**old_m, **new_m}
+
+    # ---- CH2 mode (modbus/dnp3) + addresses
+    if "ch2" in body:
+        old_ch2 = cfg.get("ch2", {})
+        new_ch2 = {**old_ch2, **body["ch2"]}
+        old_mode = (old_ch2.get("mode") or "modbus").lower()
+        new_mode = (new_ch2.get("mode") or "modbus").lower()
+        mode_changed = (old_mode != new_mode)
+
+        # normalize dnp3 sub-block
+        if new_mode == "dnp3":
+            old_d = old_ch2.get("dnp3", {}) or {}
+            req_d = (body["ch2"].get("dnp3") or {}) if "ch2" in body else {}
+            dnp = {
+                "outstation_addr": int(req_d.get("outstation_addr", old_d.get("outstation_addr", 100))),
+                "master_addr":     int(req_d.get("master_addr",     old_d.get("master_addr", 1))),
+            }
+            dnp_changed = (dnp["outstation_addr"] != old_d.get("outstation_addr")) or \
+                          (dnp["master_addr"]     != old_d.get("master_addr"))
+            new_ch2["dnp3"] = dnp
+
+        new_ch2["mode"] = new_mode
+        cfg["ch2"] = new_ch2
+
+    # ---- TCP
+    if "tcp" in body:
+        port = int(body["tcp"].get("port", cfg.get("tcp", {}).get("port", 1502)))
+        if not (port == 502 or 1025 <= port <= 5000):
+            raise HTTPException(status_code=422, detail="Invalid TCP port")
+        cfg.setdefault("tcp", {})["port"] = port
+
+    # ---- Local units (only unit1 is user-editable in your UI)
+    if "local_units" in body:
+        cfg.setdefault("local_units", {})["unit1_id"] = int(body["local_units"].get("unit1_id", 2))
+
+    # ---- HR window (fixed 0..23 in your UI; keep resilient)
+    if "hr" in body:
+        cfg["hr"] = {
+            "start": int(body["hr"].get("start", 0)),
+            "count": int(body["hr"].get("count", 24)),
+        }
+
+    # ---- Branding / Device (admin path; ignore if not present)
+    if "branding" in body:
+        cfg.setdefault("branding", {}).update(body["branding"] or {})
+    if "device" in body:
+        cfg.setdefault("device", {}).update(body["device"] or {})
+
+    # ---- Persist config
+    save_settings(cfg)  # adapt to your code
+
+    # ---- Restart CH2 worker if needed
+    if mirror_serial_changed or mode_changed or dnp_changed:
+        try:
+            restart_ch2_worker(cfg)  # or stop + spawn; adapt to your helpers
+        except Exception as e:
+            # Don’t fail the whole request; log and still return ok so UI doesn’t spin forever
+            print("[CH2] restart failed:", e)
+
+    return JSONResponse({"ok": True})
+"""
 
 
 # Serve external dashboard.html at root
