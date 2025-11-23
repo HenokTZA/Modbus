@@ -2,18 +2,12 @@
 """
 DNP3 sidecar for CH2
 
-- Uses Kisensum / Automatak pydnp3 bindings.
+- Uses Chargebyte / Automatak pydnp3 bindings.
 - Listens for JSON lines on stdin: {"op": "snap", "values": [hr0, hr1, ...]}.
 - Maps holding registers to DNP3 points:
     - HR[0..count-1] -> Analog Inputs 0..count-1
     - Bits of HR[10] -> Binary Inputs 0..15
     - Bits of HR[11] -> Binary Inputs 16..31
-
-Special: to avoid "End of file" issues with the RS485 HAT driver, we:
-    - Open the real RS485 device (e.g. /dev/ttySC1) with pySerial
-    - Create a PTY pair
-    - Bridge bytes between PTY master and the real RS485 port
-    - Configure DNP3 to talk to the PTY *slave* path instead of /dev/ttySC1
 """
 
 import sys
@@ -21,18 +15,9 @@ import json
 import argparse
 import asyncio
 import signal
-import os
-import pty
-import select
-import threading
 
 try:
-    import serial  # pySerial
-except Exception as e:
-    print("[DNP3] pySerial not available:", e, file=sys.stderr)
-    sys.exit(2)
-
-try:
+    # chargebyte fork keeps the same package name
     from pydnp3 import opendnp3, asiopal, asiodnp3
 except Exception as e:
     print("[DNP3] pydnp3 not available:", e, file=sys.stderr)
@@ -40,7 +25,10 @@ except Exception as e:
 
 
 class SnapshotApplication(opendnp3.IOutstationApplication):
-    """Minimal outstation application that can apply HR snapshots."""
+    """
+    Minimal outstation application that can apply HR snapshots
+    into the outstation database.
+    """
 
     def __init__(self, count: int):
         super().__init__()
@@ -83,7 +71,10 @@ class SnapshotApplication(opendnp3.IOutstationApplication):
 
 
 class NoopCommandHandler(opendnp3.ICommandHandler):
-    """Command handler that always returns SUCCESS."""
+    """
+    Command handler that always returns SUCCESS for any received command.
+    You can replace this with real logic later.
+    """
 
     def __init__(self):
         super().__init__()
@@ -103,6 +94,29 @@ class NoopCommandHandler(opendnp3.ICommandHandler):
     def DirectOperate(self, command, index, op_type):
         return opendnp3.CommandStatus.SUCCESS
 
+"""
+def configure_stack(count: int, outstation_addr: int, master_addr: int):
+
+    # allocate database sizes; make sure we have at least 32 binary inputs
+    db_sizes = opendnp3.DatabaseSizes.AllTypes(max(count, 32))
+    stack_config = asiodnp3.OutstationStackConfig(db_sizes)
+
+    # basic link config
+    stack_config.link.LocalAddr = outstation_addr
+    stack_config.link.RemoteAddr = master_addr
+
+    # event buffer
+    stack_config.outstation.eventBufferConfig = opendnp3.EventBufferConfig().AllTypes(100)
+
+    # configure database layout
+    db = stack_config.dbConfig
+    for i in range(count):
+        db.analog[i] = opendnp3.AnalogConfig()
+    for i in range(32):
+        db.binary[i] = opendnp3.BinaryConfig()
+
+    return stack_config
+"""
 
 def configure_stack(count, outstation_addr, master_addr):
     """
@@ -111,87 +125,26 @@ def configure_stack(count, outstation_addr, master_addr):
     We just tell it how many points we want via DatabaseSizes.AllTypes,
     and set link-layer addresses. No need to mutate dbConfig arrays.
     """
+    # Make sure we have at least 'count' analog points, and some binary headroom.
     db_sizes = opendnp3.DatabaseSizes.AllTypes(max(count, 32))
+
+    # This creates dbConfig with default AnalogConfig/BinaryConfig for all points
     stack_config = asiodnp3.OutstationStackConfig(db_sizes)
 
-    stack_config.link.LocalAddr = outstation_addr  # e.g. 100
-    stack_config.link.RemoteAddr = master_addr     # e.g. 1
+    # Link-layer addresses: outstation = local, master = remote
+    stack_config.link.LocalAddr = outstation_addr   # e.g. 100
+    stack_config.link.RemoteAddr = master_addr      # e.g. 1
 
-    # You can tweak event buffers later if needed
-    # stack_config.outstation.eventBufferConfig = opendnp3.EventBufferConfig().AllTypes(100)
+    # Optional: tweak event buffer sizes if you want later, but not required now.
+    # stack_config.outstation.eventBufferConfig = opendnp3.EventBufferConfig.AllTypes(10)
 
     return stack_config
 
 
-def start_rs485_bridge(real_port: str, baudrate: int) -> str:
-    """
-    Create a PTY pair and start a thread that bridges:
-        PTY master <-> real RS485 serial port.
-
-    Returns the PTY *slave* path that DNP3 should use (e.g. "/dev/pts/2").
-    """
-    master_fd, slave_fd = pty.openpty()
-    slave_path = os.ttyname(slave_fd)
-
-    print(
-        f"[DNP3] RS485 bridge: real={real_port} baud={baudrate} pty={slave_path}",
-        file=sys.stderr,
-    )
-
-    def worker():
-        try:
-            ser = serial.Serial(
-                real_port,
-                baudrate,
-                bytesize=8,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                timeout=0,  # non-blocking
-            )
-        except Exception as e:
-            print(f"[DNP3] RS485 bridge failed to open {real_port}: {e}", file=sys.stderr)
-            os.close(master_fd)
-            os.close(slave_fd)
-            return
-
-        try:
-            while True:
-                rlist, _, _ = select.select([master_fd, ser.fileno()], [], [])
-                # DNP3 → RS485
-                if master_fd in rlist:
-                    data = os.read(master_fd, 1024)
-                    if data:
-                        ser.write(data)
-                # RS485 → DNP3
-                if ser.fileno() in rlist:
-                    data = ser.read(1024)
-                    if data:
-                        os.write(master_fd, data)
-        except Exception as e:
-            print(f"[DNP3] RS485 bridge worker error: {e}", file=sys.stderr)
-        finally:
-            try:
-                ser.close()
-            except Exception:
-                pass
-            try:
-                os.close(master_fd)
-            except Exception:
-                pass
-            try:
-                os.close(slave_fd)
-            except Exception:
-                pass
-
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
-
-    return slave_path
-
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", required=True, help="Real RS485 device, e.g. /dev/ttySC1")
+    ap.add_argument("--port", required=True)
     ap.add_argument("--baudrate", type=int, default=9600)
     ap.add_argument("--parity", default="N")
     ap.add_argument("--stopbits", type=int, default=1)
@@ -201,47 +154,97 @@ async def main():
     ap.add_argument("--count", type=int, default=24)
     args = ap.parse_args()
 
-    # 1) Start internal RS485 <-> PTY bridge
-    pty_path = start_rs485_bridge(args.port, args.baudrate)
-
-    # 2) DNP3 manager and serial channel (pointed at PTY)
+    # DNP3 manager and serial channel
     log_handler = asiodnp3.ConsoleLogger().Create()
     manager = asiodnp3.DNP3Manager(1, log_handler)
 
     retry = asiopal.ChannelRetry().Default()
 
-    # SerialSettings as per Kisensum pydnp3
-    serial_settings = asiopal.SerialSettings()
-    serial_settings.deviceName = pty_path        # <--- DNP3 talks to PTY, not /dev/ttySC1
-    serial_settings.baud = args.baudrate
-    serial_settings.dataBits = args.bytesize
-    serial_settings.stopBits = (
-        opendnp3.StopBits.One if args.stopbits == 1 else opendnp3.StopBits.Two
-    )
-    # parity
-    if args.parity.upper() == "E":
-        serial_settings.parity = opendnp3.Parity.Even
-    elif args.parity.upper() == "O":
-        serial_settings.parity = opendnp3.Parity.Odd
+
+
+
+
+    # Determine the correct "no parity" enum – different builds name it differently
+    if hasattr(opendnp3.Parity, "None_"):
+        PARITY_NONE = opendnp3.Parity.None_
+    elif hasattr(opendnp3.Parity, "None"):
+        PARITY_NONE = getattr(opendnp3.Parity, "None")
     else:
-        # enum member is called "None", but we must use getattr in Python
-        serial_settings.parity = getattr(opendnp3.Parity, "None")
+        raise RuntimeError("Unsupported pydnp3 Parity enum (no None/None_)")
 
-    # no flow control – only if FlowType exists in this build
-    if hasattr(asiopal, "FlowType"):
-        serial_settings.flowType = getattr(asiopal.FlowType, "None")
+    parity_map = {
+        "N": PARITY_NONE,
+        "E": opendnp3.Parity.Even,
+        "O": opendnp3.Parity.Odd,
+    }
 
+    def set_first_attr(obj, names, value):
+        """Set the first existing attribute in 'names' on obj to value."""
+        for name in names:
+            if hasattr(obj, name):
+                setattr(obj, name, value)
+                return name
+        return None
 
+    # --- SerialSettings: build with default ctor, then fill fields ---
+    serial_settings = asiopal.SerialSettings()
 
-
-    print(
-        "SerialSettings debug:",
-        serial_settings.deviceName,
-        serial_settings.baud,
-        file=sys.stderr,
+    # Device / port name
+    set_first_attr(
+        serial_settings,
+        ("deviceName", "port", "portName", "device"),
+        args.port,
     )
 
+    # Baud rate
+    set_first_attr(
+        serial_settings,
+        ("baud", "baudrate"),
+        args.baudrate,
+    )
+
+    # Data bits
+    set_first_attr(
+        serial_settings,
+        ("dataBits", "data_bits"),
+        args.bytesize,
+    )
+
+    # Parity
+    set_first_attr(
+        serial_settings,
+        ("parity",),
+        parity_map[args.parity.upper()],
+    )
+
+    # Stop bits
+    stop_enum = opendnp3.StopBits.One if args.stopbits == 1 else opendnp3.StopBits.Two
+    set_first_attr(
+        serial_settings,
+        ("stopBits", "stop_bits"),
+        stop_enum,
+    )
+
+    # Optional: force no flow control if the attribute exists
+    if hasattr(asiopal, "FlowType") and hasattr(serial_settings, "flowType"):
+        # Try "None_" first, fall back to "None"
+        if hasattr(asiopal.FlowType, "None_"):
+            serial_settings.flowType = asiopal.FlowType.None_
+        elif hasattr(asiopal.FlowType, "None"):
+            serial_settings.flowType = getattr(asiopal.FlowType, "None")
+
+
+    print("SerialSettings debug:",
+          getattr(serial_settings, "deviceName", None),
+          getattr(serial_settings, "port", None),
+          getattr(serial_settings, "baud", None),
+          getattr(serial_settings, "baudrate", None),
+          file=sys.stderr)
+
+
+    # Logging level mask – NORMAL is fine, you can adjust later if needed
     log_levels = opendnp3.levels.NORMAL
+
     listener = asiodnp3.PrintingChannelListener().Create()
 
     channel = manager.AddSerial(
@@ -252,7 +255,8 @@ async def main():
         listener,
     )
 
-    # 3) Stack config and application
+
+    # stack config and application
     stack_config = configure_stack(args.count, args.outstation, args.master)
     app = SnapshotApplication(args.count)
     cmd_handler = NoopCommandHandler()
@@ -286,8 +290,7 @@ async def main():
     await loop.connect_read_pipe(lambda: protocol, sys.stdin)
 
     print(
-        f"[DNP3] outstation up on {pty_path} (bridge to {args.port}) "
-        f"baud={args.baudrate} oa={args.outstation} ma={args.master}",
+        f"[DNP3] outstation up on {args.port} baud={args.baudrate} oa={args.outstation} ma={args.master}",
         file=sys.stderr,
     )
 
@@ -296,6 +299,7 @@ async def main():
     while not stop_event.is_set():
         line = await reader.readline()
         if not line:
+            # EOF or no data; yield to event loop
             await asyncio.sleep(0.05)
             continue
 
@@ -319,3 +323,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
