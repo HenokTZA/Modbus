@@ -363,11 +363,17 @@ def issue_token(scope: str, hours: int = 8) -> str:
     payload = {"scope": scope, "exp": datetime.utcnow() + timedelta(hours=hours)}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
+
+
 def CH2_MODE() -> str:
-    try:
-        return (S().get("ch2", {}) or {}).get("mode", "modbus")
-    except Exception:
-        return "modbus"
+    """
+    For now we hard-force CH2 mode to 'modbus' so the unit operates only
+    as a Modbus RTU mirror. We ignore any 'ch2.mode' stored in settings.json.
+    """
+    return "modbus"
+
+
+
 
 def require_scopes(*allowed: str):
     def _inner(creds: HTTPAuthorizationCredentials = Depends(bearer)) -> str:
@@ -819,122 +825,7 @@ async def _write_both_views(regs: List[int]):
 
 import sys, subprocess, contextlib
 
-"""
-async def mirror_sidecar_supervisor():
-    child_proc: Optional[asyncio.subprocess.Process] = None
-    child_stdin: Optional[asyncio.StreamWriter] = None
-    current_cfg: Optional[dict] = None
 
-    child_path = str(Path(__file__).parent / "mirror_sidecar.py")
-
-    async def _stop_child():
-        nonlocal child_proc, child_stdin
-        if child_proc:
-            with contextlib.suppress(Exception):
-                child_proc.terminate()
-            try:
-                await asyncio.wait_for(child_proc.wait(), timeout=2.0)
-            except asyncio.TimeoutError:
-                with contextlib.suppress(Exception):
-                    child_proc.kill()
-            child_proc = None
-        if child_stdin:
-            with contextlib.suppress(Exception):
-                child_stdin.close()
-            child_stdin = None
-        await asyncio.sleep(0.1)
-
-    async def _start_child(cfg: dict):
-        nonlocal child_proc, child_stdin
-        args = [
-            sys.executable, "-u", child_path,
-            "--port", MIRROR_CH2_PORT,
-            "--baudrate", str(cfg["baudrate"]),
-            "--parity",   str(cfg["parity"]).upper()[:1],
-            "--stopbits", str(cfg["stopbits"]),
-            "--bytesize", str(cfg["bytesize"]),
-            "--slave-id", str(cfg["slave_id"]),
-            "--count",    str(S()["hr"]["count"]),
-        ]
-        child_proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        # In 3.9, this is already a StreamWriter:
-        child_stdin = child_proc.stdin
-        print(f"[RTU sidecar] spawned pid={child_proc.pid} cfg={cfg}")
-
-    async def _send_snapshot(regs: List[int]):
-        nonlocal child_stdin
-        if not child_stdin:
-            return
-        msg = {"op": "snap", "values": [int(x) & 0xFFFF for x in regs]}
-        data = (json.dumps(msg) + "\n").encode()
-        child_stdin.write(data)
-        with contextlib.suppress(Exception):
-            await child_stdin.drain()
-
-    def _desired_cfg() -> dict:
-        mr = (S().get("mirror_rtu", {}) or {})
-        return {
-            "baudrate": int(mr.get("baudrate", 9600)),
-            "parity":   str(mr.get("parity", "N")),
-            "stopbits": int(mr.get("stopbits", 1)),
-            "bytesize": int(mr.get("bytesize", 8)),
-            "slave_id": int(mr.get("slave_id", (S().get("local_units", {}) or {}).get("unit1_id", 2))),
-        }
-
-    async def _initial_snapshot():
-        try:
-            regs = await snapshot_regs()
-            await _send_snapshot(regs)
-        except Exception:
-            pass
-
-    # ensure first bring-up happens quickly
-    evt = mirror_reload_event or getattr(app.state, "mirror_reload_event", None)
-    if evt:
-        evt.set()
-
-    while True:
-        # Wait for a poke or light tick
-        evt = mirror_reload_event or getattr(app.state, "mirror_reload_event", None)
-        if evt:
-            try:
-                await asyncio.wait_for(evt.wait(), timeout=0.5)
-                if evt.is_set():
-                    evt.clear()
-            except asyncio.TimeoutError:
-                pass
-        else:
-            await asyncio.sleep(0.5)
-
-        desired = _desired_cfg()
-        need_restart = (
-            current_cfg != desired or
-            child_proc is None or
-            (child_proc.returncode is not None)
-        )
-
-        if need_restart:
-            await _stop_child()
-            await _start_child(desired)
-            current_cfg = desired
-            await asyncio.sleep(0.2)
-            await _initial_snapshot()
-
-        # coalesce & send latest snapshot if queued
-        if MIRROR_QUEUE is not None and not MIRROR_QUEUE.empty():
-            last = None
-            while not MIRROR_QUEUE.empty():
-                last = await MIRROR_QUEUE.get()
-            if last is not None:
-                await _send_snapshot(last)
-
-        await asyncio.sleep(0.05)
-"""
 
 async def ch2_supervisor():
     """
@@ -1009,20 +900,24 @@ async def ch2_supervisor():
         with contextlib.suppress(Exception):
             await child_stdin.drain()
 
+
     def _desired_cfg() -> dict:
         mr = (S().get("mirror_rtu", {}) or {})
         ch2 = (S().get("ch2", {}) or {})
         dnp = (ch2.get("dnp3", {}) or {})
         return {
-            "mode": str(ch2.get("mode", "modbus")).lower(),
+            # Force CH2 worker to always run as Modbus RTU mirror
+            "mode": "modbus",
             "baudrate": int(mr.get("baudrate", 9600)),
             "parity":   str(mr.get("parity", "N")),
             "stopbits": int(mr.get("stopbits", 1)),
             "bytesize": int(mr.get("bytesize", 8)),
             "slave_id": int(mr.get("slave_id", (S().get("local_units", {}) or {}).get("unit1_id", 2))),
+            # These DNP3 fields will just be ignored by mirror_sidecar, harmless to keep
             "outstation_addr": int(dnp.get("outstation_addr", 100)),
             "master_addr":     int(dnp.get("master_addr", 1)),
         }
+
 
     async def _initial_snapshot():
         try:
@@ -1390,6 +1285,56 @@ async def wait_port_free(port: str, timeout: float = 5.0, probe_baud: int = 9600
     return False
 
 
+# imports (top of file)
+import glob
+try:
+    import yaml
+except Exception:
+    yaml = None
+
+def _detect_system_mode_eth0() -> str:
+    """
+    Returns 'dhcp' or 'static' by inspecting netplan (preferred) and a couple
+    of fallbacks. Defaults to 'dhcp' if unsure.
+    """
+    # --- Prefer netplan files ---
+    for p in glob.glob("/etc/netplan/*.yaml"):
+        try:
+            with open(p, "r") as f:
+                txt = f.read()
+
+            if yaml:
+                y = yaml.safe_load(txt) or {}
+                nets = (y.get("network", {}) or {}).get("ethernets", {}) or {}
+                eth  = nets.get("eth0") or (next(iter(nets.values())) if nets else {})
+                if isinstance(eth, dict):
+                    if eth.get("dhcp4") is True:
+                        return "dhcp"
+                    if eth.get("addresses"):     # any static addresses configured
+                        return "static"
+            else:
+                # lightweight fallback if PyYAML isn't present
+                if "dhcp4: true" in txt:
+                    return "dhcp"
+                if "addresses:" in txt:
+                    return "static"
+        except Exception:
+            pass
+
+    # --- systemd-networkd lease (another DHCP hint) ---
+    try:
+        for lp in glob.glob("/run/systemd/netif/leases/*"):
+            with open(lp, "r") as f:
+                t = f.read()
+            if "ADDRESS=" in t and ("ROUTER=" in t or "SERVER_ADDRESS=" in t):
+                return "dhcp"
+    except Exception:
+        pass
+
+    return "dhcp"
+
+
+
 # ================== Web API & Dashboard ==================
 
 # ---------- NEW: Auth endpoints ----------
@@ -1408,7 +1353,7 @@ def serial_status():
         }
     }
 
-
+"""
 @app.get("/api/network")
 def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
     s = S().get("network", {}) or {}
@@ -1431,6 +1376,40 @@ def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
         "saved": saved,
         "note": "DHCP is default. Switching to static may disconnect your browser if IP/network changes."
     }
+"""
+
+@app.get("/api/network")
+def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
+    s = S().get("network", {}) or {}
+    iface_current, ip_current = _detect_primary_iface_and_ip()
+    gw_current = _detect_default_gateway()
+    dns_current = _detect_dns()
+    mode_current = _detect_system_mode_eth0()     # <<< NEW
+
+    saved = {
+        "mode": s.get("mode","dhcp"),
+        "iface": s.get("iface", iface_current or "eth0"),
+        "static": {
+            "address": ((s.get("static") or {}).get("address") or ""),
+            "netmask": ((s.get("static") or {}).get("netmask") or ""),
+            "gateway": ((s.get("static") or {}).get("gateway") or ""),
+            "dns":     ((s.get("static") or {}).get("dns") or ["8.8.8.8","1.1.1.1"]),
+        }
+    }
+    return {
+        "current": {
+            "iface": iface_current,
+            "ip": ip_current,
+            "gateway": gw_current,
+            "dns": dns_current,
+            "mode": mode_current,               # <<< NEW
+        },
+        "saved": saved,
+        "note": "DHCP is default. Switching to static may disconnect your browser if IP/network changes."
+    }
+
+
+
 
 @app.put("/api/network")
 async def api_network_put(body: Dict[str, Any] = Body(...)):
@@ -1772,6 +1751,15 @@ async def get_settings():
     }
     return JSONResponse(s)
 
+@app.get("/healthz")
+async def healthz():
+    # minimal, but you can enrich this later
+    return {
+        "status": "ok",
+        "uptime_s": time.monotonic() - app.state.start_ts,
+        "ch2_mode": CH2_MODE(),
+    }
+
 
 
 @app.put("/api/settings")
@@ -1943,103 +1931,6 @@ async def put_settings(
 
 
     return JSONResponse({"ok": True})
-
-"""
-from fastapi import HTTPException
-from fastapi.responses import JSONResponse
-
-@app.put("/api/settings")
-async def put_settings(req: Request, user=Depends(require_admin_or_user)):
-    body = await req.json()
-
-    # Load current config (adapt to your storage)
-    cfg = load_settings()  # e.g. a dict
-
-    # ---- default flags so we can safely check them later
-    mirror_serial_changed: bool = False
-    mode_changed: bool = False
-    dnp_changed: bool = False
-
-    # ---- Upstream
-    if "upstream" in body:
-        cfg.setdefault("upstream", {}).update({
-            "device_unit_id": int(body["upstream"].get("device_unit_id", cfg["upstream"].get("device_unit_id", 1))),
-            "poll_period_s": float(body["upstream"].get("poll_period_s",  cfg["upstream"].get("poll_period_s", 1.0))),
-        })
-
-    # ---- Mirror serial (CH2 UART & slave id)
-    if "mirror_rtu" in body:
-        old_m = cfg.get("mirror_rtu", {})
-        new_m = {
-            "baudrate": int(body["mirror_rtu"].get("baudrate", old_m.get("baudrate", 9600))),
-            "parity":   str(body["mirror_rtu"].get("parity",   old_m.get("parity", "N"))),
-            "stopbits": int(body["mirror_rtu"].get("stopbits", old_m.get("stopbits", 1))),
-            "bytesize": int(body["mirror_rtu"].get("bytesize", old_m.get("bytesize", 8))),
-            "slave_id": int(body["mirror_rtu"].get("slave_id", old_m.get("slave_id", 2))),
-        }
-        mirror_serial_changed = any(new_m[k] != old_m.get(k) for k in new_m.keys())
-        cfg["mirror_rtu"] = {**old_m, **new_m}
-
-    # ---- CH2 mode (modbus/dnp3) + addresses
-    if "ch2" in body:
-        old_ch2 = cfg.get("ch2", {})
-        new_ch2 = {**old_ch2, **body["ch2"]}
-        old_mode = (old_ch2.get("mode") or "modbus").lower()
-        new_mode = (new_ch2.get("mode") or "modbus").lower()
-        mode_changed = (old_mode != new_mode)
-
-        # normalize dnp3 sub-block
-        if new_mode == "dnp3":
-            old_d = old_ch2.get("dnp3", {}) or {}
-            req_d = (body["ch2"].get("dnp3") or {}) if "ch2" in body else {}
-            dnp = {
-                "outstation_addr": int(req_d.get("outstation_addr", old_d.get("outstation_addr", 100))),
-                "master_addr":     int(req_d.get("master_addr",     old_d.get("master_addr", 1))),
-            }
-            dnp_changed = (dnp["outstation_addr"] != old_d.get("outstation_addr")) or \
-                          (dnp["master_addr"]     != old_d.get("master_addr"))
-            new_ch2["dnp3"] = dnp
-
-        new_ch2["mode"] = new_mode
-        cfg["ch2"] = new_ch2
-
-    # ---- TCP
-    if "tcp" in body:
-        port = int(body["tcp"].get("port", cfg.get("tcp", {}).get("port", 1502)))
-        if not (port == 502 or 1025 <= port <= 5000):
-            raise HTTPException(status_code=422, detail="Invalid TCP port")
-        cfg.setdefault("tcp", {})["port"] = port
-
-    # ---- Local units (only unit1 is user-editable in your UI)
-    if "local_units" in body:
-        cfg.setdefault("local_units", {})["unit1_id"] = int(body["local_units"].get("unit1_id", 2))
-
-    # ---- HR window (fixed 0..23 in your UI; keep resilient)
-    if "hr" in body:
-        cfg["hr"] = {
-            "start": int(body["hr"].get("start", 0)),
-            "count": int(body["hr"].get("count", 24)),
-        }
-
-    # ---- Branding / Device (admin path; ignore if not present)
-    if "branding" in body:
-        cfg.setdefault("branding", {}).update(body["branding"] or {})
-    if "device" in body:
-        cfg.setdefault("device", {}).update(body["device"] or {})
-
-    # ---- Persist config
-    save_settings(cfg)  # adapt to your code
-
-    # ---- Restart CH2 worker if needed
-    if mirror_serial_changed or mode_changed or dnp_changed:
-        try:
-            restart_ch2_worker(cfg)  # or stop + spawn; adapt to your helpers
-        except Exception as e:
-            # Don’t fail the whole request; log and still return ok so UI doesn’t spin forever
-            print("[CH2] restart failed:", e)
-
-    return JSONResponse({"ok": True})
-"""
 
 
 # Serve external dashboard.html at root

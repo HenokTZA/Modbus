@@ -52,8 +52,16 @@ except Exception:
     _ModbusTcpServer = None
 from pymodbus.server import StartAsyncTcpServer  # you already have this
 
+import contextlib
+import asyncio
 
 from typing import Optional
+import ipaddress, subprocess, shlex, re
+
+from fastapi import Body, HTTPException
+import asyncio, ipaddress, subprocess, json
+from typing import Any, Dict
+
 PREV_MIRROR_ID: Optional[int] = None
 PREV_EXPIRY: float = 0.0
 
@@ -102,96 +110,145 @@ def _seed_secret_if_missing(db, key: str, plain: str):
         db.add(Secret(key=key, value=argon2.hash(plain)))
         db.commit()
 
-"""
+
+
+
+def _mask_to_prefix(mask: str) -> int:
+    # allow "255.255.255.0" or "/24" or ""
+    mask = (mask or "").strip()
+    if not mask:
+        return None  # caller decides default
+    if mask.startswith("/"):
+        return int(mask[1:])
+    # dotted -> prefix
+    try:
+        net = ipaddress.IPv4Network(f"0.0.0.0/{mask}")
+        return int(net.prefixlen)
+    except Exception:
+        raise HTTPException(400, f"Invalid netmask '{mask}'")
+
+def _detect_primary_iface_and_ip() -> tuple[str, str]:
+    """
+    Returns (iface, ip) of the route used to reach the internet.
+    """
+    try:
+        r = subprocess.run(["ip","route","get","8.8.8.8"], capture_output=True, text=True, check=True)
+        line = r.stdout.strip().splitlines()[0]
+        # e.g. "8.8.8.8 via 192.168.1.1 dev eth0 src 192.168.1.20 ..."
+        dev = re.search(r"\bdev\s+(\S+)", line)
+        src = re.search(r"\bsrc\s+(\S+)", line)
+        iface = dev.group(1) if dev else ""
+        ip = src.group(1) if src else ""
+        return (iface, ip)
+    except Exception:
+        # fallback: pick settings iface, and try ip addr
+        iface = (S().get("network",{}) or {}).get("iface","eth0")
+        ip = ""
+        try:
+            r = subprocess.run(["ip","-4","addr","show",iface], capture_output=True, text=True)
+            m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", r.stdout)
+            if m: ip = m.group(1)
+        except Exception:
+            pass
+        return (iface, ip)
+
+def _detect_default_gateway() -> str:
+    try:
+        r = subprocess.run(["ip","route","show","default"], capture_output=True, text=True)
+        m = re.search(r"default via (\d+\.\d+\.\d+\.\d+)", r.stdout)
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+def _detect_dns() -> list[str]:
+    out = []
+    try:
+        with open("/etc/resolv.conf","r") as f:
+            for line in f:
+                if line.strip().startswith("nameserver"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        out.append(parts[1])
+    except Exception:
+        pass
+    return out
+
+def _validate_static(address: str, netmask: str, gateway: str, dns: list[str]) -> tuple[ipaddress.IPv4Interface, list[str]]:
+    try:
+        # allow address with /prefix OR with separate netmask
+        if "/" in address:
+            iface = ipaddress.IPv4Interface(address)
+        else:
+            pfx = _mask_to_prefix(netmask)
+            if pfx is None:
+                raise HTTPException(400, "Provide netmask (e.g. 255.255.255.0) or use address in CIDR form (e.g. 192.168.1.10/24)")
+            iface = ipaddress.IPv4Interface(f"{address}/{pfx}")
+    except Exception:
+        raise HTTPException(400, f"Invalid IPv4 address '{address}'")
+
+    try:
+        gw = ipaddress.IPv4Address(gateway)
+    except Exception:
+        raise HTTPException(400, f"Invalid gateway '{gateway}'")
+
+    if gw not in iface.network:
+        raise HTTPException(400, "Gateway is not in the same subnet as the static address")
+
+    dns_ok = []
+    for d in dns or []:
+        if not d: continue
+        try:
+            ipaddress.IPv4Address(d)
+            dns_ok.append(d)
+        except Exception:
+            raise HTTPException(400, f"Invalid DNS '{d}'")
+
+    return iface, dns_ok
+
+
 def _force_close_tcp_port(port: int):
+    """
+    Close ONLY listening TCP sockets in this process bound to `port`
+    (handles IPv4 and IPv6). Leaves established connections alone.
+    """
     base = "/proc/self/fd"
     closed = 0
     for fdname in os.listdir(base):
-        fpath = os.path.join(base, fdname)
-        try:
-            st = os.stat(fpath)
-            if not stat.S_ISSOCK(st.st_mode):
-                continue
-            fd = int(fdname)
-
-            # Inspect via a dup so we don't accidentally close the real FD
-            for fam in (socket.AF_INET, socket.AF_INET6):
-                try:
-                    s = socket.fromfd(fd, fam, socket.SOCK_STREAM)
-                except Exception:
-                    continue
-                try:
-                    # Must be TCP and have a local addr with this port
-                    try:
-                        laddr = s.getsockname()
-                    except OSError:
-                        laddr = None
-                    if isinstance(laddr, tuple) and len(laddr) >= 2 and laddr[1] == port:
-                        try:
-                            listening = s.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
-                        except OSError:
-                            listening = 0
-                        if listening:
-                            # Close the real FD
-                            try:
-                                os.close(fd)
-                                closed += 1
-                                print(f"[TCP] forcibly closed old listener fd={fd} on :{port}")
-                            except Exception:
-                                pass
-                finally:
-                    try:
-                        s.close()  # close the dup
-                    except Exception:
-                        pass
-        except Exception:
-            continue
-    if closed == 0:
-        print(f"[TCP] no lingering listener found on :{port}")
-"""
-
-"""
-def _force_close_tcp_port(port: int):
-    base = "/proc/self/fd"
-    closed = 0
-    for fdname in os.listdir(base):
         try:
             fd = int(fdname)
-        except Exception:
-            continue
-        try:
             st = os.fstat(fd)
         except Exception:
             continue
         if not stat.S_ISSOCK(st.st_mode):
             continue
 
-        sock = None
-        # Try IPv4 first, then IPv6
         for family in (socket.AF_INET, socket.AF_INET6):
+            s = None
             try:
-                sock = socket.fromfd(fd, family, socket.SOCK_STREAM)
-                # If family doesn't match, getsockname will raise
-                laddr = sock.getsockname()
-                # IPv4: (host, port); IPv6: (host, port, flow, scope)
-                lport = laddr[1] if isinstance(laddr, tuple) and len(laddr) >= 2 else None
-                if lport == port:
-                    try:
-                        os.close(fd)
-                        closed += 1
-                        print(f"[TCP] forcibly closed listener fd={fd} on :{port}")
-                    except Exception:
-                        pass
-                break
+                s = socket.fromfd(fd, family, socket.SOCK_STREAM)
+                # Must be a bound/listening TCP socket
+                laddr = s.getsockname()
+                lport = (laddr[1] if isinstance(laddr, tuple) and len(laddr) >= 2 else None)
+                if lport != port:
+                    continue
+                is_listening = s.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN) == 1
+                if not is_listening:
+                    continue
+                os.close(fd)
+                closed += 1
+                print(f"[TCP] forcibly closed listener fd={fd} on :{port}")
+                break  # fd is gone; stop trying families
             except Exception:
                 pass
             finally:
-                if sock is not None:
-                    try: sock.detach()
+                if s is not None:
+                    try: s.detach()
                     except Exception: pass
     if closed:
-        print(f"[TCP] force-closed {closed} fd(s) on :{port}")
-"""
+        print(f"[TCP] force-closed {closed} listening fd(s) on :{port}")
+
+
+
 
 
 
@@ -217,6 +274,21 @@ def _filter_user_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     lu_in = payload.get("local_units") or {}
     if isinstance(lu_in, dict) and "unit1_id" in lu_in:
         out["local_units"] = {"unit1_id": lu_in["unit1_id"]}
+
+    # Allow switching CH2 mode + DNP3 link addresses
+    ch2 = payload.get("ch2") or {}
+    if isinstance(ch2, dict):
+        out_ch2 = {}
+        if "mode" in ch2:
+            out_ch2["mode"] = ch2["mode"]
+        dnp3 = ch2.get("dnp3") or {}
+        if isinstance(dnp3, dict):
+            dd = {}
+            if "outstation_addr" in dnp3: dd["outstation_addr"] = dnp3["outstation_addr"]
+            if "master_addr"     in dnp3: dd["master_addr"]     = dnp3["master_addr"]
+            if dd: out_ch2["dnp3"] = dd
+        if out_ch2: out["ch2"] = out_ch2
+
 
     # user cannot change: upstream, hr, branding, device, unit0_id
     return out
@@ -290,6 +362,12 @@ bearer = HTTPBearer(auto_error=True)
 def issue_token(scope: str, hours: int = 8) -> str:
     payload = {"scope": scope, "exp": datetime.utcnow() + timedelta(hours=hours)}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+def CH2_MODE() -> str:
+    try:
+        return (S().get("ch2", {}) or {}).get("mode", "modbus")
+    except Exception:
+        return "modbus"
 
 def require_scopes(*allowed: str):
     def _inner(creds: HTTPAuthorizationCredentials = Depends(bearer)) -> str:
@@ -400,6 +478,23 @@ def require_scope(required: str):
 SETTINGS_PATH = "settings.json"
 
 DEFAULT_SETTINGS = {
+    "ch2": {                    # NEW: what to run on RS485 CH2
+        "mode": "modbus",       # "modbus" or "dnp3"
+        "dnp3": {
+            "outstation_addr": 100,   # DNP3 link-layer outstation address
+            "master_addr": 1          # master address to accept
+        }
+    },
+    "network": {
+        "mode": "dhcp",          # "dhcp" (default) or "static"
+        "iface": "eth0",         # change if your primary NIC is different
+        "static": {
+            "address": "",       # e.g. "192.168.1.100"
+            "netmask": "",       # e.g. "255.255.255.0" (or leave empty if you’ll send /prefix)
+            "gateway": "",       # e.g. "192.168.1.1"
+            "dns": ["8.8.8.8","1.1.1.1"]
+        }
+    },
     "upstream": {  # master -> device on CH1 (serial params are fixed in code)
         "device_unit_id": 1,
         "poll_period_s": 1.0
@@ -431,6 +526,7 @@ DEFAULT_SETTINGS = {
     },
     "device": { "model": "" }
 }
+
 # =====================================================
 
 # ---------- Settings helpers ----------
@@ -476,6 +572,48 @@ async def maybe_lock(lock):
 # ---------- Alarm & State model helpers ----------
 def _bit(v: int, n: int) -> int:
     return 1 if (int(v) >> n) & 1 else 0
+
+def _force_close_tcp_port(port: int):
+    """
+    Close ONLY listening TCP sockets in this process bound to `port`
+    (handles IPv4 and IPv6). Leaves established connections alone.
+    """
+    base = "/proc/self/fd"
+    closed = 0
+    for fdname in os.listdir(base):
+        try:
+            fd = int(fdname)
+            st = os.fstat(fd)
+        except Exception:
+            continue
+        if not stat.S_ISSOCK(st.st_mode):
+            continue
+
+        for family in (socket.AF_INET, socket.AF_INET6):
+            s = None
+            try:
+                s = socket.fromfd(fd, family, socket.SOCK_STREAM)
+                # Must be a bound/listening TCP socket
+                laddr = s.getsockname()
+                lport = (laddr[1] if isinstance(laddr, tuple) and len(laddr) >= 2 else None)
+                if lport != port:
+                    continue
+                is_listening = s.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN) == 1
+                if not is_listening:
+                    continue
+                os.close(fd)
+                closed += 1
+                print(f"[TCP] forcibly closed listener fd={fd} on :{port}")
+                break  # fd is gone; stop trying families
+            except Exception:
+                pass
+            finally:
+                if s is not None:
+                    try: s.detach()
+                    except Exception: pass
+    if closed:
+        print(f"[TCP] force-closed {closed} listening fd(s) on :{port}")
+
 
 def build_measurements_from_hr(hr: list[int]) -> dict:
     return {
@@ -681,11 +819,8 @@ async def _write_both_views(regs: List[int]):
 
 import sys, subprocess, contextlib
 
+"""
 async def mirror_sidecar_supervisor():
-    """
-    Spawns/kills mirror_sidecar.py with the requested serial params.
-    Streams HR snapshots to it via JSON lines over stdin.
-    """
     child_proc: Optional[asyncio.subprocess.Process] = None
     child_stdin: Optional[asyncio.StreamWriter] = None
     current_cfg: Optional[dict] = None
@@ -791,6 +926,143 @@ async def mirror_sidecar_supervisor():
             await _initial_snapshot()
 
         # coalesce & send latest snapshot if queued
+        if MIRROR_QUEUE is not None and not MIRROR_QUEUE.empty():
+            last = None
+            while not MIRROR_QUEUE.empty():
+                last = await MIRROR_QUEUE.get()
+            if last is not None:
+                await _send_snapshot(last)
+
+        await asyncio.sleep(0.05)
+"""
+
+async def ch2_supervisor():
+    """
+    Owns the RS485 CH2 process. Depending on S()['ch2']['mode'], it will spawn:
+      - mirror_sidecar.py  (Modbus RTU mirror)
+      - dnp3_sidecar.py    (DNP3 outstation)
+    It streams HR snapshots to the child via JSON lines: {"op":"snap","values":[...]}
+    """
+    child_proc: Optional[asyncio.subprocess.Process] = None
+    child_stdin: Optional[asyncio.StreamWriter] = None
+    current_cfg: Optional[dict] = None  # includes mode + serial + ids
+    child_path_modbus = str(Path(__file__).parent / "mirror_sidecar.py")
+    child_path_dnp3   = str(Path(__file__).parent / "dnp3_sidecar.py")
+
+    async def _stop_child():
+        nonlocal child_proc, child_stdin
+        if child_proc:
+            with contextlib.suppress(Exception):
+                child_proc.terminate()
+            try:
+                await asyncio.wait_for(child_proc.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                with contextlib.suppress(Exception):
+                    child_proc.kill()
+            child_proc = None
+        if child_stdin:
+            with contextlib.suppress(Exception):
+                child_stdin.close()
+            child_stdin = None
+        await asyncio.sleep(0.1)
+
+    async def _start_child(cfg: dict):
+        nonlocal child_proc, child_stdin
+        mode = cfg["mode"]
+        if mode == "modbus":
+            args = [
+                sys.executable, "-u", child_path_modbus,
+                "--port", MIRROR_CH2_PORT,
+                "--baudrate", str(cfg["baudrate"]),
+                "--parity",   str(cfg["parity"]).upper()[:1],
+                "--stopbits", str(cfg["stopbits"]),
+                "--bytesize", str(cfg["bytesize"]),
+                "--slave-id", str(cfg["slave_id"]),
+                "--count",    str(S()["hr"]["count"]),
+            ]
+        else:  # dnp3
+            args = [
+                sys.executable, "-u", child_path_dnp3,
+                "--port", MIRROR_CH2_PORT,
+                "--baudrate", str(cfg["baudrate"]),
+                "--parity",   str(cfg["parity"]).upper()[:1],
+                "--stopbits", str(cfg["stopbits"]),
+                "--bytesize", str(cfg["bytesize"]),
+                "--outstation", str(cfg["outstation_addr"]),
+                "--master",     str(cfg["master_addr"]),
+                "--count",      str(S()["hr"]["count"]),
+            ]
+        child_proc = await asyncio.create_subprocess_exec(
+            *args, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        child_stdin = child_proc.stdin
+        print(f"[CH2 {mode}] spawned pid={child_proc.pid} cfg={cfg}")
+
+    async def _send_snapshot(regs: List[int]):
+        nonlocal child_stdin
+        if not child_stdin:
+            return
+        msg = {"op": "snap", "values": [int(x) & 0xFFFF for x in regs]}
+        data = (json.dumps(msg) + "\n").encode()
+        child_stdin.write(data)
+        with contextlib.suppress(Exception):
+            await child_stdin.drain()
+
+    def _desired_cfg() -> dict:
+        mr = (S().get("mirror_rtu", {}) or {})
+        ch2 = (S().get("ch2", {}) or {})
+        dnp = (ch2.get("dnp3", {}) or {})
+        return {
+            "mode": str(ch2.get("mode", "modbus")).lower(),
+            "baudrate": int(mr.get("baudrate", 9600)),
+            "parity":   str(mr.get("parity", "N")),
+            "stopbits": int(mr.get("stopbits", 1)),
+            "bytesize": int(mr.get("bytesize", 8)),
+            "slave_id": int(mr.get("slave_id", (S().get("local_units", {}) or {}).get("unit1_id", 2))),
+            "outstation_addr": int(dnp.get("outstation_addr", 100)),
+            "master_addr":     int(dnp.get("master_addr", 1)),
+        }
+
+    async def _initial_snapshot():
+        try:
+            regs = await snapshot_regs()
+            await _send_snapshot(regs)
+        except Exception:
+            pass
+
+    # kick first start
+    evt = mirror_reload_event or getattr(app.state, "mirror_reload_event", None)
+    if evt: evt.set()
+
+    while True:
+        # Wait for a poke or tick
+        evt = mirror_reload_event or getattr(app.state, "mirror_reload_event", None)
+        if evt:
+            try:
+                await asyncio.wait_for(evt.wait(), timeout=0.5)
+                if evt.is_set(): evt.clear()
+            except asyncio.TimeoutError:
+                pass
+        else:
+            await asyncio.sleep(0.5)
+
+        desired = _desired_cfg()
+        need_restart = (
+            (current_cfg != desired) or
+            (child_proc is None) or
+            (child_proc.returncode is not None)
+        )
+        if need_restart:
+            await _stop_child()
+            # (optional) prime serial like before if you want:
+            # await prime_serial_port(desired)
+            await _start_child(desired)
+            current_cfg = desired
+            await asyncio.sleep(0.2)
+            await _initial_snapshot()
+
+        # coalesce & send latest snapshot
         if MIRROR_QUEUE is not None and not MIRROR_QUEUE.empty():
             last = None
             while not MIRROR_QUEUE.empty():
@@ -922,450 +1194,21 @@ async def poll_upstream_and_update_cache():
         await _safe_close(client)
 
 
-"""
-async def tcp_server_manager():
-    current_port = None
-    server_task: asyncio.Task | None = None
-
-    async def _stop_task():
-        nonlocal server_task
-        if server_task and not server_task.done():
-            server_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await server_task
-        server_task = None
-        await asyncio.sleep(0.3)  # let the OS free the socket
-
-    async def _start(port: int) -> asyncio.Task:
-        async def run():
-            await StartAsyncTcpServer(
-                context=tcp_context,                 # context is mutable; no restart needed on changes
-                address=("0.0.0.0", port),
-                ignore_missing_slaves=False,
-            )
-        t = asyncio.create_task(run(), name=f"mbtcp:{port}")
-        def _dbg(task: asyncio.Task):
-            if task.cancelled():
-                return
-            exc = task.exception()
-            if exc:
-                print(f"[TCP] task crashed: {exc!r}")
-        t.add_done_callback(_dbg)
-        return t
-
-    try:
-        while True:
-            desired_port = S()["tcp"]["port"]
-
-            needs_restart = (
-                (server_task is None) or
-                server_task.done() or
-                desired_port != current_port
-            )
-
-            if needs_restart:
-                await _stop_task()
-                current_port = desired_port
-
-                last_err = None
-                for attempt in range(1, 6):
-                    try:
-                        server_task = await _start(current_port)
-                        print(f"[TCP] listening on 0.0.0.0:{current_port}")
-                        last_err = None
-                        break
-                    except Exception as e:
-                        last_err = e
-                        print(f"[TCP] start attempt {attempt} failed: {e!r}")
-                        await asyncio.sleep(0.3 * attempt)
-
-                if last_err is not None:
-                    print(f"[TCP] giving up for now: {last_err!r}")
-
-            await asyncio.sleep(0.5)
-    finally:
-        await _stop_task()
-"""
-
-"""
-async def tcp_server_manager():
-    current_port: Optional[int] = None
-    server_task: Optional[asyncio.Task] = None
-    server_obj = None  # asyncio.AbstractServer or pymodbus server wrapper
-
-    async def _stop_task():
-        nonlocal server_task, server_obj
-        # try graceful shutdown across pymodbus/asyncio versions
-        if server_obj:
-            close = (getattr(server_obj, "server_close", None) or
-                     getattr(server_obj, "close", None) or
-                     getattr(server_obj, "shutdown", None))
-            if close:
-                res = close()
-                if asyncio.iscoroutine(res):
-                    await res
-            wait_closed = getattr(server_obj, "wait_closed", None)
-            if wait_closed:
-                try:
-                    await wait_closed()
-                except Exception:
-                    pass
-            server_obj = None
-
-        if server_task and not server_task.done():
-            server_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await server_task
-        server_task = None
-        await asyncio.sleep(0.3)  # give the OS a moment to release the socket
-
-    async def _start(port: int) -> asyncio.Task:
-
-        async def run():
-            nonlocal server_obj
-            try:
-                # Preferred path: get the server object without blocking forever.
-                srv = await StartAsyncTcpServer(
-                    context=tcp_context,
-                    address=("0.0.0.0", port),
-                    ignore_missing_slaves=False,
-                    defer_start=True,          # newer pymodbus
-                )
-                server_obj = srv
-                await srv.serve_forever()
-            except TypeError:
-                # Older pymodbus without defer_start: fall back to the classic runner.
-                server_obj = None
-                await StartAsyncTcpServer(
-                    context=tcp_context,
-                    address=("0.0.0.0", port),
-                    ignore_missing_slaves=False,
-                )
-        t = asyncio.create_task(run(), name=f"mbtcp:{port}")
-        def _dbg(task: asyncio.Task):
-            if task.cancelled():
-                return
-            exc = task.exception()
-            if exc:
-                print(f"[TCP] task crashed: {exc!r}")
-        t.add_done_callback(_dbg)
-        return t
-
-    try:
-        while True:
-            desired_port = int(S()["tcp"]["port"])
-
-            needs_restart = (
-                server_task is None or
-                server_task.done() or
-                desired_port != current_port
-            )
-
-            if needs_restart:
-                await _stop_task()
-                current_port = desired_port
-
-                last_err = None
-                for attempt in range(1, 6):
-                    try:
-                        server_task = await _start(current_port)
-                        print(f"[TCP] listening on 0.0.0.0:{current_port}")
-                        last_err = None
-                        break
-                    except Exception as e:
-                        last_err = e
-                        print(f"[TCP] start attempt {attempt} failed: {e!r}")
-                        await asyncio.sleep(0.3 * attempt)
-
-                if last_err is not None:
-                    print(f"[TCP] giving up for now: {last_err!r}")
-
-            # wake up quickly if something pokes us
-            evt = tcp_reload_event or getattr(app.state, "tcp_reload_event", None)
-            if evt:
-                try:
-                    await asyncio.wait_for(evt.wait(), timeout=0.5)
-                    if evt.is_set():
-                        evt.clear()
-                except asyncio.TimeoutError:
-                    pass
-            else:
-                await asyncio.sleep(0.5)
-    finally:
-        await _stop_task()
-"""
-
-"""
-async def tcp_server_manager():
-    current_port = None
-    server_task: asyncio.Task | None = None
-    server_handle = None  # ModbusTcpServer or asyncio.Server (depending on path)
-
-    async def _stop_task():
-        nonlocal server_task, server_handle
-        # Try graceful stop via server_handle
-        if server_handle is not None:
-            try:
-                stop = getattr(server_handle, "stop", None)
-                if stop:
-                    res = stop()
-                    if asyncio.iscoroutine(res):
-                        await res
-                # Fallback APIs
-                close = (getattr(server_handle, "server_close", None) or
-                         getattr(server_handle, "close", None))
-                if close:
-                    res = close()
-                    if asyncio.iscoroutine(res):
-                        await res
-                wait_closed = getattr(server_handle, "wait_closed", None)
-                if wait_closed:
-                    try:
-                        await wait_closed()
-                    except Exception:
-                        pass
-            finally:
-                server_handle = None
-
-        # Cancel runner task if any
-        if server_task and not server_task.done():
-            server_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await server_task
-        server_task = None
-
-        # Give kernel time to drop the old listen socket
-        await asyncio.sleep(0.3)
-
-    async def _start(port: int) -> asyncio.Task:
-        nonlocal server_handle
-
-        async def run_new_api():
-            nonlocal server_handle
-            # Newer API: explicit server object with start/stop
-            server_handle = _ModbusTcpServer(
-                context=tcp_context,
-                address=("0.0.0.0", port),
-                ignore_missing_slaves=False,
-            )
-            await server_handle.start()         # starts listening
-            try:
-                # Keep task alive while server runs
-                while True:
-                    await asyncio.sleep(3600)
-            finally:
-                with contextlib.suppress(Exception):
-                    await server_handle.stop()
-
-        async def run_defer_start():
-            nonlocal server_handle
-            # Older API path: get a handle via defer_start=True
-            from pymodbus.server import StartAsyncTcpServer
-            srv = await StartAsyncTcpServer(
-                context=tcp_context,
-                address=("0.0.0.0", port),
-                ignore_missing_slaves=False,
-                defer_start=True,
-            )
-            server_handle = srv
-            await srv.serve_forever()
-
-        async def run_legacy():
-            # Last-resort legacy: no handle; cancellation may not close socket on some versions.
-            # We only reach this if neither path above exists; keeping for completeness.
-            from pymodbus.server import StartAsyncTcpServer
-            await StartAsyncTcpServer(
-                context=tcp_context,
-                address=("0.0.0.0", port),
-                ignore_missing_slaves=False,
-            )
-
-        async def run():
-            try:
-                if _ModbusTcpServer is not None:
-                    await run_new_api()
-                else:
-                    try:
-                        await run_defer_start()
-                    except TypeError:
-                        await run_legacy()
-            except asyncio.CancelledError:
-                # Task cancelled during restart; ensure server is stopped
-                raise
-            except Exception as e:
-                print(f"[TCP] server crashed: {e!r}")
-                raise
-
-        t = asyncio.create_task(run(), name=f"mbtcp:{port}")
-        def _dbg(task: asyncio.Task):
-            if task.cancelled():
-                return
-            exc = task.exception()
-            if exc:
-                print(f"[TCP] task crashed: {exc!r}")
-        t.add_done_callback(_dbg)
-        return t
-
-    try:
-        while True:
-            desired_port = int(S()["tcp"]["port"])
-            needs_restart = (server_task is None or server_task.done() or desired_port != current_port)
-
-            if needs_restart:
-                await _stop_task()
-                current_port = desired_port
-
-                last_err = None
-                for attempt in range(1, 6):
-                    try:
-                        server_task = await _start(current_port)
-                        print(f"[TCP] listening on 0.0.0.0:{current_port}")
-                        last_err = None
-                        break
-                    except Exception as e:
-                        last_err = e
-                        print(f"[TCP] start attempt {attempt} failed: {e!r}")
-                        await asyncio.sleep(0.3 * attempt)
-                if last_err is not None:
-                    print(f"[TCP] giving up for now: {last_err!r}")
-
-            # quick wake on poke
-            evt = tcp_reload_event or getattr(app.state, "tcp_reload_event", None)
-            if evt:
-                try:
-                    await asyncio.wait_for(evt.wait(), timeout=0.5)
-                    if evt.is_set():
-                        evt.clear()
-                except asyncio.TimeoutError:
-                    pass
-            else:
-                await asyncio.sleep(0.5)
-    finally:
-        await _stop_task()
-"""
-
-"""
-async def tcp_server_manager():
-    current_port: Optional[int] = None
-    server_obj = None          # new API object with .start()/.shutdown()/.server
-    server_task: asyncio.Task | None = None  # legacy fallback task
-
-    async def _stop_old_listener(old_port: Optional[int]):
-        nonlocal server_obj, server_task
-        # 1) Try the modern API
-        try:
-            if server_obj is not None:
-                # Best-effort graceful shutdown
-                if hasattr(server_obj, "shutdown") and callable(server_obj.shutdown):
-                    try:
-                        await server_obj.shutdown()
-                    except Exception:
-                        pass
-                # If it exposes the underlying asyncio.Server, close it explicitly
-                try:
-                    srv = getattr(server_obj, "server", None)
-                    if srv is not None:
-                        try:
-                            srv.close()
-                            await srv.wait_closed()
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-        finally:
-            server_obj = None
-
-        # 2) Legacy task path
-        if server_task and not server_task.done():
-            server_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await server_task
-        server_task = None
-
-        # 3) As a last resort, sweep/close any leftover FDs bound to the old port
-        if old_port is not None:
-            try:
-                _force_close_tcp_port(int(old_port))
-            except Exception as e:
-                print(f"[TCP] fd sweep error: {e}")
-        await asyncio.sleep(0.25)  # let kernel settle
-
-    async def _start_new_listener(new_port: int):
-        nonlocal server_obj, server_task
-        server_obj = None
-        server_task = None
-
-        # Try the modern path first (defer_start)
-        try:
-            srv = await StartAsyncTcpServer(
-                context=tcp_context,
-                address=("0.0.0.0", new_port),
-                ignore_missing_slaves=False,
-                defer_start=True,  # NEW: get a controllable server
-            )
-            await srv.start()
-            server_obj = srv
-            print(f"[TCP] listening on 0.0.0.0:{new_port}")
-            return
-        except TypeError:
-            # Older pymodbus that doesn't support defer_start
-            pass
-
-        # Legacy fallback: fire-and-forget task
-        async def run_legacy():
-            print("[TCP] Legacy pymodbus path in use; consider upgrading.")
-            await StartAsyncTcpServer(
-                context=tcp_context,
-                address=("0.0.0.0", new_port),
-                ignore_missing_slaves=False,
-            )
-        server_task = asyncio.create_task(run_legacy(), name=f"mbtcp:{new_port}")
-        def _dbg(task: asyncio.Task):
-            if task.cancelled():
-                return
-            exc = task.exception()
-            if exc:
-                print(f"[TCP] task crashed: {exc!r}")
-        server_task.add_done_callback(_dbg)
-        print(f"[TCP] listening on 0.0.0.0:{new_port}")
-
-    try:
-        while True:
-            desired_port = int(S()["tcp"]["port"])
-
-            if current_port is None:
-                # initial bring-up
-                await _start_new_listener(desired_port)
-                current_port = desired_port
-            elif desired_port != current_port:
-                # PORT CHANGE: stop old first, then start new
-                old_port = current_port
-                await _stop_old_listener(old_port)
-                await _start_new_listener(desired_port)
-                current_port = desired_port
-
-            await asyncio.sleep(0.4)
-    finally:
-        await _stop_old_listener(current_port)
-"""
-
 async def tcp_server_manager():
     """
-    Robust Modbus TCP manager that:
+    Robust Modbus TCP manager:
       - Uses defer_start when available;
-      - On legacy pymodbus, captures the asyncio.Server created internally,
-        so we can close it properly (IPv4 + IPv6);
-      - As a last resort, sweeps FDs on the old port.
+      - On legacy pymodbus, captures ONLY the asyncio.Server created for the
+        exact Modbus port, then closes it on port change.
     """
     current_port: Optional[int] = None
-    server_obj = None                     # modern path object (with .shutdown() / .server)
-    legacy_server: Optional[asyncio.base_events.Server] = None  # captured asyncio.Server
-    server_task: Optional[asyncio.Task] = None                  # legacy task
+    server_obj = None
+    legacy_server: Optional[asyncio.base_events.Server] = None
+    server_task: Optional[asyncio.Task] = None
 
     async def _stop_old_listener(old_port: Optional[int]):
         nonlocal server_obj, legacy_server, server_task
-
-        # Modern pymodbus object
+        # Modern path
         if server_obj is not None:
             try:
                 if hasattr(server_obj, "shutdown") and callable(server_obj.shutdown):
@@ -1375,16 +1218,13 @@ async def tcp_server_manager():
             try:
                 srv = getattr(server_obj, "server", None)
                 if srv is not None:
-                    try:
-                        srv.close()
-                        await srv.wait_closed()
-                    except Exception:
-                        pass
+                    srv.close()
+                    await srv.wait_closed()
             except Exception:
                 pass
             server_obj = None
 
-        # Legacy captured asyncio.Server
+        # Legacy path
         if legacy_server is not None:
             try:
                 legacy_server.close()
@@ -1393,17 +1233,15 @@ async def tcp_server_manager():
                 pass
             legacy_server = None
 
-        # Legacy task (ensure it's gone)
         if server_task and not server_task.done():
             server_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await server_task
         server_task = None
 
-        # Kill any stragglers (both families)
         if old_port is not None:
             _force_close_tcp_port(int(old_port))
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(0.2)
 
     async def _start_new_listener(new_port: int):
         nonlocal server_obj, legacy_server, server_task
@@ -1424,40 +1262,51 @@ async def tcp_server_manager():
             print(f"[TCP] listening on 0.0.0.0:{new_port}")
             return
         except TypeError:
-            # defer_start not supported -> legacy path
-            pass
+            pass  # legacy path
 
-        # Legacy path: monkey-patch asyncio.start_server ONCE to capture the Server
+        # ---- Legacy path (scoped, port-matching capture) ----
         orig_start_server = asyncio.start_server
+        captured_evt = asyncio.Event()
 
-        async def spy_start_server(*args, **kwargs):
-            # Restore immediately so only the first call is intercepted
-            asyncio.start_server = orig_start_server
-            srv = await orig_start_server(*args, **kwargs)
-            # Capture the Server so we can close it later
-            nonlocal legacy_server
-            legacy_server = srv
-            return srv
+        async def spy_start_server(client_connected_cb, host=None, port=None, *args, **kwargs):
+            # Only capture if THIS call is for the Modbus port we are starting
+            if port == new_port:
+                asyncio.start_server = orig_start_server  # restore immediately
+                srv = await orig_start_server(client_connected_cb, host, port, *args, **kwargs)
+                nonlocal legacy_server
+                legacy_server = srv
+                captured_evt.set()
+                return srv
+            # Not our server; just forward (do NOT capture)
+            return await orig_start_server(client_connected_cb, host, port, *args, **kwargs)
 
+        # Install the spy and ensure we restore it soon no matter what
         asyncio.start_server = spy_start_server
 
         async def run_legacy():
             print("[TCP] Legacy pymodbus path in use; consider upgrading.")
-            await StartAsyncTcpServer(
-                context=tcp_context,
-                address=("0.0.0.0", new_port),
-                ignore_missing_slaves=False,
-            )
+            try:
+                await StartAsyncTcpServer(
+                    context=tcp_context,
+                    address=("0.0.0.0", new_port),
+                    ignore_missing_slaves=False,
+                )
+            finally:
+                # Safety: ensure spy is removed even if something throws
+                if asyncio.start_server is spy_start_server:
+                    asyncio.start_server = orig_start_server
 
         server_task = asyncio.create_task(run_legacy(), name=f"mbtcp:{new_port}")
 
-        def _dbg(task: asyncio.Task):
-            if task.cancelled():
-                return
-            exc = task.exception()
-            if exc:
-                print(f"[TCP] task crashed: {exc!r}")
-        server_task.add_done_callback(_dbg)
+        # Wait briefly for the capture; then make sure we restore the spy
+        try:
+            await asyncio.wait_for(captured_evt.wait(), timeout=1.5)
+        except asyncio.TimeoutError:
+            pass  # we may still be fine; just restore the spy now
+        finally:
+            if asyncio.start_server is spy_start_server:
+                asyncio.start_server = orig_start_server
+
         print(f"[TCP] listening on 0.0.0.0:{new_port}")
 
     try:
@@ -1469,14 +1318,13 @@ async def tcp_server_manager():
                 current_port = desired_port
             elif desired_port != current_port:
                 old_port = current_port
-                await _stop_old_listener(old_port)   # STOP OLD FIRST
+                await _stop_old_listener(old_port)
                 await _start_new_listener(desired_port)
                 current_port = desired_port
 
             await asyncio.sleep(0.4)
     finally:
         await _stop_old_listener(current_port)
-
 
 
 
@@ -1545,6 +1393,130 @@ async def wait_port_free(port: str, timeout: float = 5.0, probe_baud: int = 9600
 # ================== Web API & Dashboard ==================
 
 # ---------- NEW: Auth endpoints ----------
+
+@app.get("/api/runtime/serial_status")
+def serial_status():
+    mr = (S().get("mirror_rtu", {}) or {})
+    return {
+        "port": MIRROR_CH2_PORT,
+        "mode": CH2_MODE(),   # NEW
+        "configured": {
+            "baudrate": int(mr.get("baudrate", 9600)),
+            "parity":   str(mr.get("parity", "N")).upper()[:1],
+            "stopbits": int(mr.get("stopbits", 1)),
+            "bytesize": int(mr.get("bytesize", 8)),
+        }
+    }
+
+
+@app.get("/api/network")
+def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
+    s = S().get("network", {}) or {}
+    iface_current, ip_current = _detect_primary_iface_and_ip()
+    gw_current = _detect_default_gateway()
+    dns_current = _detect_dns()
+
+    saved = {
+        "mode": s.get("mode","dhcp"),
+        "iface": s.get("iface", iface_current or "eth0"),
+        "static": {
+            "address": ((s.get("static") or {}).get("address") or ""),
+            "netmask": ((s.get("static") or {}).get("netmask") or ""),
+            "gateway": ((s.get("static") or {}).get("gateway") or ""),
+            "dns":     ((s.get("static") or {}).get("dns") or ["8.8.8.8","1.1.1.1"]),
+        }
+    }
+    return {
+        "current": {"iface": iface_current, "ip": ip_current, "gateway": gw_current, "dns": dns_current},
+        "saved": saved,
+        "note": "DHCP is default. Switching to static may disconnect your browser if IP/network changes."
+    }
+
+@app.put("/api/network")
+async def api_network_put(body: Dict[str, Any] = Body(...)):
+    body = body or {}
+
+    mode  = str(body.get("mode", "dhcp")).lower().strip()
+    iface = (
+        body.get("iface")
+        or ((S().get("network") or {}).get("iface"))
+        or "eth0"
+    )
+
+    if mode not in ("dhcp", "static"):
+        raise HTTPException(status_code=400, detail="mode must be 'dhcp' or 'static'")
+
+    # ---------- STATIC ----------
+    if mode == "static":
+        st = body.get("static") or {}
+        address = (st.get("address") or "").strip()
+        netmask = (st.get("netmask") or "").strip()     # allow dotted or /prefix
+        gateway = (st.get("gateway") or "").strip()
+        dns     = st.get("dns") or []
+
+        # your validator should return (IPv4Interface, list[str] or None)
+        iface_if, dns_ok = _validate_static(address, netmask, gateway, dns)
+        addr_cidr = str(iface_if.with_prefixlen)  # "a.b.c.d/pfx"
+
+        # persist to settings.json (under the async lock)
+        async with SETTINGS_LOCK:
+            current = load_settings_from_disk()
+            current.setdefault("network", {})
+            current["network"]["mode"]  = "static"
+            current["network"]["iface"] = iface
+            current["network"]["static"] = {
+                "address": str(iface_if.ip),
+                "netmask": str(iface_if.network.netmask),
+                "gateway": gateway,
+                "dns": dns_ok or ["8.8.8.8", "1.1.1.1"],
+            }
+            await save_settings_to_disk(current)
+            SETTINGS.clear()
+            SETTINGS.update(current)
+
+        # apply via helper script
+        dns_csv = ",".join(dns_ok) if dns_ok else ""
+        try:
+            subprocess.run(
+                ["sudo", "/usr/local/bin/netcfg-apply", "static", iface, addr_cidr, gateway, dns_csv],
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(status_code=500, detail=f"Failed to apply static IP: {e}")
+
+        return {
+            "ok": True,
+            "applied": {
+                "mode": "static",
+                "iface": iface,
+                "address": str(iface_if.ip),
+                "netmask": str(iface_if.network.netmask),
+                "gateway": gateway,
+                "dns": dns_ok,
+            },
+            "note": "Applied static network. You may need to reconnect to the new IP.",
+        }
+
+    # ---------- DHCP ----------
+    async with SETTINGS_LOCK:
+        current = load_settings_from_disk()
+        current.setdefault("network", {})
+        current["network"]["mode"]  = "dhcp"
+        current["network"]["iface"] = iface
+        await save_settings_to_disk(current)
+        SETTINGS.clear()
+        SETTINGS.update(current)
+
+    try:
+        subprocess.run(["sudo", "/usr/local/bin/netcfg-apply", "dhcp", iface], check=True)
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to switch to DHCP: {e}")
+
+    return {
+        "ok": True,
+        "applied": {"mode": "dhcp", "iface": iface},
+        "note": "Switched to DHCP. The IP may change; you may lose connection.",
+    }
 
 @app.get("/api/runtime/serial_status")
 def serial_status():
@@ -1782,6 +1754,15 @@ async def get_settings():
         "poll_period_s":  up.get("poll_period_s", 1.0),
     }
     mr = s.get("mirror_rtu", {}) or {}
+    ch2 = s.get("ch2", {}) or {}
+    dnp = ch2.get("dnp3", {}) or {}
+    s["ch2"] = {
+        "mode": ch2.get("mode", "modbus"),
+        "dnp3": {
+            "outstation_addr": int(dnp.get("outstation_addr", 100)),
+            "master_addr":     int(dnp.get("master_addr", 1)),
+        }
+    }
     s["mirror_rtu"] = {
         "slave_id": mr.get("slave_id", (s.get("local_units", {}) or {}).get("unit1_id", 2)),
         "baudrate": mr.get("baudrate", 9600),
@@ -1800,6 +1781,12 @@ async def put_settings(
 ):
 
     payload = payload or {}
+
+    # put this right after you read the request JSON and current settings
+    mirror_serial_changed: bool = False
+    mode_changed: bool = False
+    dnp_changed: bool = False  # if you want to watch DNP3 addr changes
+
 
     if scope == "user":
         payload = _filter_user_payload(payload)
@@ -1839,6 +1826,22 @@ async def put_settings(
             except Exception:
                 raise HTTPException(status_code=400, detail="tcp.port must be an integer")
         payload["tcp"] = tcp_out
+
+    # ---- sanitize ch2 (mode + dnp3 addrs)
+    if isinstance(payload.get("ch2"), dict):
+        ch2_in  = payload["ch2"]
+        ch2_out: Dict[str, Any] = {}
+        if "mode" in ch2_in:
+            mode = str(ch2_in["mode"]).lower()
+            if mode not in ("modbus", "dnp3"):
+                raise HTTPException(400, "ch2.mode must be 'modbus' or 'dnp3'")
+            ch2_out["mode"] = mode
+        if isinstance(ch2_in.get("dnp3"), dict):
+            di = ch2_in["dnp3"]; do: Dict[str, Any] = {}
+            if "outstation_addr" in di: do["outstation_addr"] = int(di["outstation_addr"])
+            if "master_addr"     in di: do["master_addr"]     = int(di["master_addr"])
+            ch2_out["dnp3"] = do
+        payload["ch2"] = ch2_out
 
 
     async with SETTINGS_LOCK:
@@ -1916,6 +1919,17 @@ async def put_settings(
     if need_rebuild:
         await rebuild_datastores_and_context()
 
+    # after you compute need_rebuild etc., add:
+    prev_mode = (prev.get("ch2", {}) or {}).get("mode", "modbus")
+    new_mode  = (S().get("ch2",  {}) or {}).get("mode", "modbus")
+    mode_changed = (prev_mode != new_mode)
+
+    # serial params changed? (you already have mirror_serial_changed)
+    if mirror_serial_changed or mode_changed:
+        evt = getattr(app.state, "mirror_reload_event", None)
+        if evt: evt.set()
+
+
     # ----- only poke the RTU manager if SERIAL parameters changed (NOT slave_id)
     prev_mr = (prev.get("mirror_rtu", {}) or {})
     new_mr  = (S().get("mirror_rtu", {}) or {})
@@ -1930,6 +1944,102 @@ async def put_settings(
 
     return JSONResponse({"ok": True})
 
+"""
+from fastapi import HTTPException
+from fastapi.responses import JSONResponse
+
+@app.put("/api/settings")
+async def put_settings(req: Request, user=Depends(require_admin_or_user)):
+    body = await req.json()
+
+    # Load current config (adapt to your storage)
+    cfg = load_settings()  # e.g. a dict
+
+    # ---- default flags so we can safely check them later
+    mirror_serial_changed: bool = False
+    mode_changed: bool = False
+    dnp_changed: bool = False
+
+    # ---- Upstream
+    if "upstream" in body:
+        cfg.setdefault("upstream", {}).update({
+            "device_unit_id": int(body["upstream"].get("device_unit_id", cfg["upstream"].get("device_unit_id", 1))),
+            "poll_period_s": float(body["upstream"].get("poll_period_s",  cfg["upstream"].get("poll_period_s", 1.0))),
+        })
+
+    # ---- Mirror serial (CH2 UART & slave id)
+    if "mirror_rtu" in body:
+        old_m = cfg.get("mirror_rtu", {})
+        new_m = {
+            "baudrate": int(body["mirror_rtu"].get("baudrate", old_m.get("baudrate", 9600))),
+            "parity":   str(body["mirror_rtu"].get("parity",   old_m.get("parity", "N"))),
+            "stopbits": int(body["mirror_rtu"].get("stopbits", old_m.get("stopbits", 1))),
+            "bytesize": int(body["mirror_rtu"].get("bytesize", old_m.get("bytesize", 8))),
+            "slave_id": int(body["mirror_rtu"].get("slave_id", old_m.get("slave_id", 2))),
+        }
+        mirror_serial_changed = any(new_m[k] != old_m.get(k) for k in new_m.keys())
+        cfg["mirror_rtu"] = {**old_m, **new_m}
+
+    # ---- CH2 mode (modbus/dnp3) + addresses
+    if "ch2" in body:
+        old_ch2 = cfg.get("ch2", {})
+        new_ch2 = {**old_ch2, **body["ch2"]}
+        old_mode = (old_ch2.get("mode") or "modbus").lower()
+        new_mode = (new_ch2.get("mode") or "modbus").lower()
+        mode_changed = (old_mode != new_mode)
+
+        # normalize dnp3 sub-block
+        if new_mode == "dnp3":
+            old_d = old_ch2.get("dnp3", {}) or {}
+            req_d = (body["ch2"].get("dnp3") or {}) if "ch2" in body else {}
+            dnp = {
+                "outstation_addr": int(req_d.get("outstation_addr", old_d.get("outstation_addr", 100))),
+                "master_addr":     int(req_d.get("master_addr",     old_d.get("master_addr", 1))),
+            }
+            dnp_changed = (dnp["outstation_addr"] != old_d.get("outstation_addr")) or \
+                          (dnp["master_addr"]     != old_d.get("master_addr"))
+            new_ch2["dnp3"] = dnp
+
+        new_ch2["mode"] = new_mode
+        cfg["ch2"] = new_ch2
+
+    # ---- TCP
+    if "tcp" in body:
+        port = int(body["tcp"].get("port", cfg.get("tcp", {}).get("port", 1502)))
+        if not (port == 502 or 1025 <= port <= 5000):
+            raise HTTPException(status_code=422, detail="Invalid TCP port")
+        cfg.setdefault("tcp", {})["port"] = port
+
+    # ---- Local units (only unit1 is user-editable in your UI)
+    if "local_units" in body:
+        cfg.setdefault("local_units", {})["unit1_id"] = int(body["local_units"].get("unit1_id", 2))
+
+    # ---- HR window (fixed 0..23 in your UI; keep resilient)
+    if "hr" in body:
+        cfg["hr"] = {
+            "start": int(body["hr"].get("start", 0)),
+            "count": int(body["hr"].get("count", 24)),
+        }
+
+    # ---- Branding / Device (admin path; ignore if not present)
+    if "branding" in body:
+        cfg.setdefault("branding", {}).update(body["branding"] or {})
+    if "device" in body:
+        cfg.setdefault("device", {}).update(body["device"] or {})
+
+    # ---- Persist config
+    save_settings(cfg)  # adapt to your code
+
+    # ---- Restart CH2 worker if needed
+    if mirror_serial_changed or mode_changed or dnp_changed:
+        try:
+            restart_ch2_worker(cfg)  # or stop + spawn; adapt to your helpers
+        except Exception as e:
+            # Don’t fail the whole request; log and still return ok so UI doesn’t spin forever
+            print("[CH2] restart failed:", e)
+
+    return JSONResponse({"ok": True})
+"""
 
 
 # Serve external dashboard.html at root
@@ -1963,7 +2073,7 @@ async def main():
     await asyncio.gather(
         poll_upstream_and_update_cache(),
         tcp_server_manager(),
-        mirror_sidecar_supervisor(),
+        ch2_supervisor(),
         start_web(),
         settings_auto_reload(),
     )

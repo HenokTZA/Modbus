@@ -1,6 +1,6 @@
 {
   "ch2": {
-    "mode": "dnp3",
+    "mode": "modbus",
     "dnp3": {
       "outstation_addr": 100,
       "master_addr": 1
@@ -10,7 +10,7 @@
     "mode": "static",
     "iface": "eth0",
     "static": {
-      "address": "192.168.0.181",
+      "address": "192.168.0.100",
       "netmask": "255.255.255.0",
       "gateway": "192.168.0.10",
       "dns": [
@@ -49,6 +49,6 @@
     "qr_url": ""
   },
   "device": {
-    "model": ""
+    "model": "110/30-T6P"
   }
 }
