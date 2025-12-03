@@ -1605,14 +1605,14 @@ $("btnResetPwNo").onclick = ()=>{
 const openConfigModal = (role)=>{ 
   CURRENT_SETTINGS_ROLE = role;
   updateSettingsVisibility();
-  $("backdrop").style.display="flex";
-ch2ApplyModeUI();
+  $("backdrop").style.display = "flex";
+  ch2ApplyModeUI();
 
-  if (role === 'admin') {
-    bindNet('adm');
-    fillNet('adm').catch(console.error);
-  }
+  // ✅ Initialise network form for BOTH user and admin
+  bindNet("adm");
+  fillNet("adm").catch(console.error);
 };
+
 
   const closeConfigModal = ()=>{ $("backdrop").style.display="none"; };
 
