@@ -1291,12 +1291,8 @@ try:
     import yaml
 except Exception:
     yaml = None
-
+"""
 def _detect_system_mode_eth0() -> str:
-    """
-    Returns 'dhcp' or 'static' by inspecting netplan (preferred) and a couple
-    of fallbacks. Defaults to 'dhcp' if unsure.
-    """
     # --- Prefer netplan files ---
     for p in glob.glob("/etc/netplan/*.yaml"):
         try:
@@ -1331,6 +1327,55 @@ def _detect_system_mode_eth0() -> str:
     except Exception:
         pass
 
+    return "dhcp"
+"""
+
+
+def _detect_system_mode_eth0() -> str:
+    """
+    Returns 'dhcp' or 'static' by looking at runtime state first (leases),
+    then falling back to netplan config. Defaults to 'dhcp' if unsure.
+    """
+
+    # 1) Runtime: systemd-networkd leases (strong hint of DHCP in use)
+    try:
+        for lp in glob.glob("/run/systemd/netif/leases/*"):
+            with open(lp, "r") as f:
+                t = f.read()
+
+            # Only consider leases for eth0
+            if "IFNAME=eth0" in t and "ADDRESS=" in t and (
+                "ROUTER=" in t or "SERVER_ADDRESS=" in t
+            ):
+                return "dhcp"
+    except Exception:
+        pass
+
+    # 2) Netplan files (what the system *wants* to do)
+    try:
+        for p in glob.glob("/etc/netplan/*.yaml"):
+            with open(p, "r") as f:
+                txt = f.read()
+
+            if yaml:
+                y = yaml.safe_load(txt) or {}
+                nets = (y.get("network", {}) or {}).get("ethernets", {}) or {}
+                eth  = nets.get("eth0") or (next(iter(nets.values())) if nets else {})
+                if isinstance(eth, dict):
+                    if eth.get("dhcp4") is True:
+                        return "dhcp"
+                    if eth.get("addresses"):     # any static addresses configured
+                        return "static"
+            else:
+                # lightweight fallback if PyYAML isn't present
+                if "dhcp4: true" in txt:
+                    return "dhcp"
+                if "addresses:" in txt:
+                    return "static"
+    except Exception:
+        pass
+
+    # 3) If we can’t tell, assume DHCP (safer / matches reset-button behavior)
     return "dhcp"
 
 
@@ -1378,6 +1423,7 @@ def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
     }
 """
 
+"""
 @app.get("/api/network")
 def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
     s = S().get("network", {}) or {}
@@ -1407,6 +1453,81 @@ def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
         "saved": saved,
         "note": "DHCP is default. Switching to static may disconnect your browser if IP/network changes."
     }
+"""
+
+"""
+@app.get("/api/network")
+def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
+    s = S().get("network", {}) or {}
+    iface_current, ip_current = _detect_primary_iface_and_ip()
+    gw_current = _detect_default_gateway()
+    dns_current = _detect_dns()
+
+    # Effective mode: prefer a runtime marker if your /usr/local/bin/netcfg-apply writes it
+    effective_mode = s.get("mode", "dhcp")
+    try:
+        with open("/run/netcfg-mode", "r") as f:
+            mark = (f.read() or "").strip().lower()
+            if mark in ("dhcp", "static"):
+                effective_mode = mark
+    except FileNotFoundError:
+        # Fallback heuristic: if live IP equals saved static IP → static
+        st = (s.get("static") or {})
+        if ip_current and st.get("address") and ip_current == st["address"]:
+            effective_mode = "static"
+
+    saved = {
+        "mode": s.get("mode","dhcp"),
+        "iface": s.get("iface", iface_current or "eth0"),
+        "static": {
+            "address": ((s.get("static") or {}).get("address") or ""),
+            "netmask": ((s.get("static") or {}).get("netmask") or ""),
+            "gateway": ((s.get("static") or {}).get("gateway") or ""),
+            "dns":     ((s.get("static") or {}).get("dns") or ["8.8.8.8","1.1.1.1"]),
+        }
+    }
+    return {
+        "current": {"iface": iface_current, "ip": ip_current, "gateway": gw_current, "dns": dns_current, "mode": effective_mode},
+        "saved": saved,
+        "note": "DHCP is default. Switching to static may disconnect your browser if IP/network changes."
+    }
+"""
+
+
+from pathlib import Path
+
+@app.get("/api/network")
+def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
+    s = S().get("network", {}) or {}
+    iface_current, ip_current = _detect_primary_iface_and_ip()
+    gw_current = _detect_default_gateway()
+    dns_current = _detect_dns()
+
+    # NEW: read what netcfg-apply / reset button wrote
+    mode_current = None
+    try:
+        p = Path("/run/netcfg-mode")
+        if p.exists():
+            mode_current = p.read_text().strip().lower() or None
+    except Exception:
+        mode_current = None
+
+    saved = {
+        "mode": s.get("mode","dhcp"),
+        "iface": s.get("iface", iface_current or "eth0"),
+        "static": {
+            "address": ((s.get("static") or {}).get("address") or ""),
+            "netmask": ((s.get("static") or {}).get("netmask") or ""),
+            "gateway": ((s.get("static") or {}).get("gateway") or ""),
+            "dns":     ((s.get("static") or {}).get("dns") or ["8.8.8.8","1.1.1.1"]),
+        }
+    }
+    return {
+        "current": {"iface": iface_current, "ip": ip_current, "gateway": gw_current, "dns": dns_current, "mode": mode_current},
+        "saved": saved,
+        "note": "DHCP is default. Switching to static may disconnect your browser if IP/network changes."
+    }
+
 
 
 

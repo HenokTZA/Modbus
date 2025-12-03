@@ -1,4 +1,3 @@
-
 <!doctype html><meta charset="utf-8">
 <title>Modbus Mirror Dashboard</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -895,50 +894,53 @@ function bindNet(prefix){
 
 async function fillNet(prefix){
   const n = getNet(prefix);
-  if (!n.curip) return;
+  if (!n?.curip) return;
 
   try {
     const r = await apiRequest('/api/network', { noAutoLogout:true });
+    if (!r.ok) { console.warn('GET /api/network failed:', r.status); return; }
 
-    if (!r.ok) {
-      // Don’t overwrite UI with defaults if the call failed.
-      console.warn('GET /api/network failed:', r.status);
-      return;
-    }
-
-    // Only parse JSON when content-type is JSON (avoid errors on empty body)
-    let data = {};
     const ct = r.headers.get('content-type') || '';
-    if (ct.includes('application/json')) {
-      data = await r.json().catch(()=>({}));
+    const data = ct.includes('application/json') ? (await r.json().catch(()=>({}))) : {};
+
+    // ----- CURRENT -----
+    const cur = data.current || {};
+    n.curip.value = cur.ip || '—';
+
+    // ----- SAVED -----
+    const saved = data.saved || {};
+    const savedMode = String(saved.mode || 'dhcp').toLowerCase();
+    const savedIP   = String((saved.static?.address) || '').trim();
+    const curIP     = String(n.curip.value || '').trim();
+
+    // Prefer backend’s live mode if it exists
+    let modeNow = (cur.mode ? String(cur.mode).toLowerCase() : null);
+
+    // Fallback heuristic: only show Static if saved says static AND the IP still matches
+    if (!modeNow) {
+      modeNow = (savedMode === 'static' && savedIP && savedIP === curIP) ? 'static' : 'dhcp';
     }
 
-    // current (read-only)
-    // current (read-only)
-n.curip.value = data.current?.ip || '—';
+    // Write radios *and* fields from modeNow
+    const isStatic = (modeNow === 'static');
+    if (n.modeDhcp)   n.modeDhcp.checked   = !isStatic;
+    if (n.modeStatic) n.modeStatic.checked =  isStatic;
+    if (n.fields)     n.fields.style.display = isStatic ? '' : 'none';
 
-// prefer effective mode from backend, fallback to saved
-const saved   = data.saved || {};
-const modeNow = (data.current && data.current.mode) || (saved.mode || 'dhcp');
-const isStatic = modeNow === 'static';
+    // Fill static values from saved (values only)
+    const st = saved.static || {};
+    if (n.ip)   n.ip.value   = st.address || '';
+    if (n.mask) n.mask.value = st.netmask || '';
+    if (n.gw)   n.gw.value   = st.gateway || '';
+    if (n.dns)  n.dns.value  = (st.dns || []).join(',');
 
-if (n.modeDhcp)   n.modeDhcp.checked = !isStatic;
-if (n.modeStatic) n.modeStatic.checked =  isStatic;
-
-// keep static fields from *saved* so the form shows what you'd apply if switching back
-const st = saved.static || {};
-if (n.ip)   n.ip.value   = st.address || '';
-if (n.mask) n.mask.value = st.netmask || '';
-if (n.gw)   n.gw.value   = st.gateway || '';
-if (n.dns)  n.dns.value  = (st.dns || []).join(',');
-
-// show/hide static fields by the effective mode
-if (n.fields) n.fields.style.display = isStatic ? '' : 'none';
-
+    // Debug trace (remove after verifying)
+    console.debug(`[fillNet:${prefix}] cur.ip=${curIP} saved.mode=${savedMode} saved.ip=${savedIP} -> modeNow=${modeNow}`);
   } catch (e) {
     console.error('fillNet error:', e);
   }
 }
+
 
 
 async function applyNet(prefix){
