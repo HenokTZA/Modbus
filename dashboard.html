@@ -201,6 +201,21 @@
   .top-left a{display:inline-block}
 }
 
+  #netPopupBackdrop{ z-index:2600; } /* above settings modal */
+
+  .net-modal{
+    width:min(460px,92vw);          /* smaller than main settings modal */
+  }
+
+  .net-modal-ip{
+    margin-left:6px;
+    padding:4px 8px;
+    border-radius:8px;
+    background:#0b1220;
+    border:1px solid #223;
+    font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  }
+
 </style>
 
 <!-- ====== Full-screen PIN Gate ====== -->
@@ -618,12 +633,35 @@
 
  
 
+<!-- Network change popup -->
+<div id="netPopupBackdrop" class="modal-backdrop" style="display:none;">
+  <div class="modal net-modal">
+    <header>
+      <div id="i.netPopupTitle">Network updated</div>
+      <button id="netPopupClose" class="icon-btn">✖</button>
+    </header>
+    <div class="content">
+      <p id="netPopupMessage"></p>
+      <p id="netPopupIpWrap" style="margin-top:8px; display:none;">
+        <span id="i.netNewIpLabel">Connect to this IP:</span>
+        <span id="netPopupIp" class="net-modal-ip"></span>
+      </p>
+      <div class="actions">
+        <button id="netPopupOk" class="btn primary">OK</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="toast" class="toast"></div>
+
 
 <script>
   /* ==================== I18N STRINGS ==================== */
   const I18N = {
     es: {
+      netPopupTitle: "Red actualizada",
+      netNewIpLabel: "Conéctese a esta IP:",
       tcpPortNote: "El puerto TCP debe ser 502 o estar en el rango 1025–5000.",
       tcpPortInvalid: "Por favor, elija un puerto correcto (502 o 1025–5000).",
       userChangeTitle: "Cambiar contraseña de Ajustes de Usuario",
@@ -733,6 +771,8 @@
       }
     },
     en: {
+      netPopupTitle: "Network updated",
+      netNewIpLabel: "Connect to this IP:",
       tcpPortNote: "Please choose port 502 or a port in the range 1025–5000.",
       tcpPortInvalid: "Please choose a correct port (502 or 1025–5000).",
       userChangeTitle: "Change user settings password",
@@ -942,49 +982,83 @@ async function fillNet(prefix){
 }
 
 
-
 async function applyNet(prefix){
   const n = getNet(prefix);
-  const mode = (n.modeStatic && n.modeStatic.checked) ? 'static' : 'dhcp';
-  const payload = { mode, iface: 'eth0' };
+  const mode = (n.modeStatic && n.modeStatic.checked) ? "static" : "dhcp";
+  const payload = { mode, iface: "eth0" };
 
-  if (mode === 'static') {
+  if (mode === "static") {
     payload.static = {
-      address: (n.ip?.value || '').trim(),
-      netmask: (n.mask?.value || '').trim(),
-      gateway: (n.gw?.value || '').trim(),
-      dns: (n.dns?.value || '').split(',').map(s=>s.trim()).filter(Boolean)
+      address: (n.ip?.value   || "").trim(),
+      netmask: (n.mask?.value || "").trim(),
+      gateway: (n.gw?.value   || "").trim(),
+      dns: (n.dns?.value || "")
+        .split(",")
+        .map(s => s.trim())
+        .filter(Boolean),
     };
     if (!payload.static.address || !payload.static.gateway) {
-      alert('Static requires address and gateway (and subnet mask or /prefix).');
+      showNetPopup(
+        (LANG === "es")
+          ? "Modo estático requiere dirección IP y puerta de enlace."
+          : "Static mode requires IP address and gateway (and a subnet mask)."
+      );
       return;
     }
   }
 
+  const prevIp = (n.curip?.value || "").trim();
+
   try {
-    const r = await apiRequest('/api/network', {
-      method: 'PUT',
-      // keep the user on the page even if token is stale; we’ll show a message
-      noAutoLogout: true,
+    const r = await apiRequest("/api/network", {
+      method: "PUT",
+      noAutoLogout: true,           // don’t kick user to login if token expired
       body: JSON.stringify(payload)
     });
 
-    // Safely parse JSON only if present & JSON
+    // Parse JSON safely
     let j = {};
-    const ct = r.headers.get('content-type') || '';
-    if (ct.includes('application/json')) {
+    const ct = r.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
       try { j = await r.json(); } catch {}
     }
     if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
 
-    alert(j.note || 'Network applied.');
-    // Refresh the values shown in the form (may be stale for ~1–2s)
-    setTimeout(()=>fillNet(prefix).catch(console.error), 1500);
+    const applied = j.applied || {};
+    const newIp = String(applied.address || "").trim();
+    const note = j.note ||
+      ((LANG === "es") ? "Red actualizada." : "Network settings applied.");
+
+    // Show centered popup with optional IP
+    showNetPopup(note, newIp || null);
+
+    // Refresh visible values after a short delay
+    setTimeout(async () => {
+      try {
+        await fillNet(prefix);
+        const curIp = (n.curip?.value || "").trim();
+        if (!newIp && curIp && curIp !== prevIp) {
+          // Backend didn’t send IP → show it as a toast hint
+          toast(
+            (LANG === "es")
+              ? `Nueva IP: ${curIp}`
+              : `New IP address: ${curIp}`
+          );
+        }
+      } catch (e) {
+        console.error("fillNet after applyNet failed:", e);
+      }
+    }, 1500);
+
   } catch (e) {
-    alert('Failed to apply network: ' + (e && e.message ? e.message : e));
+    showNetPopup(
+      (LANG === "es"
+        ? "Error al aplicar la red: "
+        : "Failed to apply network: ")
+      + (e && e.message ? e.message : e)
+    );
   }
 }
-
 
 
 
@@ -1083,6 +1157,37 @@ const __DUMMY = document.createElement('div');
 const $ = (id) => document.getElementById(id) || __DUMMY;
 
   const toast = (msg)=>{ const t=$("toast"); t.textContent=msg; t.style.display="block"; setTimeout(()=>t.style.display="none", 2200); };
+
+  function showNetPopup(message, ip){
+    const backdrop = $("netPopupBackdrop");
+    const msgEl    = $("netPopupMessage");
+    const ipWrap   = $("netPopupIpWrap");
+    const ipEl     = $("netPopupIp");
+    if (!backdrop || !msgEl) {
+      // Fallback to toast if modal not present
+      toast(ip ? `${message} (${t("netNewIpLabel")} ${ip})` : message);
+      return;
+    }
+    msgEl.textContent = message;
+    if (ip && ipEl && ipWrap) {
+      ipEl.textContent = ip;
+      ipWrap.style.display = "";
+    } else if (ipWrap) {
+      ipWrap.style.display = "none";
+    }
+    backdrop.style.display = "flex";
+  }
+
+  // Close handlers for the network popup
+  $("netPopupOk").onclick    = () => $("netPopupBackdrop").style.display = "none";
+  $("netPopupClose").onclick = () => $("netPopupBackdrop").style.display = "none";
+  $("netPopupBackdrop").addEventListener("click", (e) => {
+    if (e.target === $("netPopupBackdrop")) {
+      $("netPopupBackdrop").style.display = "none";
+    }
+  });
+
+
   const F=(n,u)=>typeof n==="number"&&isFinite(n)?n.toFixed(1)+" "+(u||""):"--";
   const pill2=(text,color)=>`<span class="pill2 ${color}">${text}</span>`;
 

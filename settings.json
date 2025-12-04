@@ -7,11 +7,11 @@
     }
   },
   "network": {
-    "mode": "dhcp",
+    "mode": "static",
     "iface": "eth0",
     "static": {
-      "address": "192.168.0.120",
-      "netmask": "255.255.255.0",
+      "address": "192.168.0.11",
+      "netmask": "255.255.255.240",
       "gateway": "192.168.0.10",
       "dns": [
         "8.8.8.8",

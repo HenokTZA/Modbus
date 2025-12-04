@@ -1612,6 +1612,15 @@ async def api_network_put(body: Dict[str, Any] = Body(...)):
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=500, detail=f"Failed to switch to DHCP: {e}")
 
+    # Best-effort: figure out the new IP after switching
+    new_iface, new_ip = _detect_primary_iface_and_ip()
+    applied = {
+        "mode": "dhcp",
+        "iface": new_iface or iface,
+    }
+    if new_ip:
+        applied["address"] = new_ip
+
     return {
         "ok": True,
         "applied": {"mode": "dhcp", "iface": iface},
