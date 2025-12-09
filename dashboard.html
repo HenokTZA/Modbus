@@ -982,6 +982,64 @@ async function fillNet(prefix){
 }
 
 
+async function applyNetCore(prefix, payload, prevIp) {
+  const n = getNet(prefix);
+
+  try {
+    const r = await apiRequest("/api/network", {
+      method: "PUT",
+      noAutoLogout: true,
+      body: JSON.stringify(payload),
+    });
+
+    let j = {};
+    const ct = r.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      try { j = await r.json(); } catch {}
+    }
+    if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+
+    const applied = j.applied || {};
+    const newIp = String(applied.address || "").trim();
+    const note =
+      j.note ||
+      (LANG === "es"
+        ? "Red aplicada correctamente."
+        : "Network settings applied.");
+
+    // For DHCP, we might still want to update the popup text
+    if (payload.mode === "dhcp") {
+      showNetPopup(note, newIp || null);
+    }
+
+    // Refresh visible fields (if we’re still connected)
+    setTimeout(async () => {
+      try {
+        await fillNet(prefix);
+        const curIp = (n.curip?.value || "").trim();
+        if (!newIp && curIp && curIp !== prevIp) {
+          toast(
+            LANG === "es"
+              ? `Nueva IP: ${curIp}`
+              : `New IP address: ${curIp}`
+          );
+        }
+      } catch (e) {
+        console.error("fillNet after applyNet failed:", e);
+      }
+    }, 1500);
+  } catch (e) {
+    // If static change already killed the connection, we still have the popup
+    console.error("applyNetCore error:", e);
+    toast(
+      (LANG === "es"
+        ? "Error al aplicar la red: "
+        : "Failed to apply network: ") + (e?.message || e)
+    );
+  }
+}
+
+
 async function applyNet(prefix){
   const n = getNet(prefix);
   const mode = (n.modeStatic && n.modeStatic.checked) ? "static" : "dhcp";
@@ -993,30 +1051,49 @@ async function applyNet(prefix){
       netmask: (n.mask?.value || "").trim(),
       gateway: (n.gw?.value   || "").trim(),
       dns: (n.dns?.value || "")
-        .split(",")
-        .map(s => s.trim())
-        .filter(Boolean),
+        .split(",").map(s => s.trim()).filter(Boolean),
     };
+
     if (!payload.static.address || !payload.static.gateway) {
-      showNetPopup(
-        (LANG === "es")
+      // simple validation message
+      toast(
+        LANG === "es"
           ? "Modo estático requiere dirección IP y puerta de enlace."
           : "Static mode requires IP address and gateway (and a subnet mask)."
       );
       return;
     }
+
+    // 🔥 Fire-and-forget – expected to break the HTTP connection
+    (async () => {
+      try {
+        await apiRequest("/api/network", {
+          method: "PUT",
+          noAutoLogout: true,
+          body: JSON.stringify(payload),
+        });
+        // If we actually get a response, quietly refresh the form
+        setTimeout(() => fillNet(prefix).catch(console.error), 1500);
+      } catch (e) {
+        // When IP changes, fetch throws "NetworkError when attempting to fetch resource"
+        console.warn("applyNet(static): likely lost connection after IP change:", e);
+        // IMPORTANT: do NOT show any alert here
+      }
+    })();
+
+    // We’re done; device will change IP soon. The user already saw the
+    // main message when they clicked Guardar.
+    return;
   }
 
-  const prevIp = (n.curip?.value || "").trim();
-
+  // ---------- DHCP branch ----------
   try {
     const r = await apiRequest("/api/network", {
       method: "PUT",
-      noAutoLogout: true,           // don’t kick user to login if token expired
-      body: JSON.stringify(payload)
+      noAutoLogout: true,
+      body: JSON.stringify(payload),
     });
 
-    // Parse JSON safely
     let j = {};
     const ct = r.headers.get("content-type") || "";
     if (ct.includes("application/json")) {
@@ -1024,41 +1101,23 @@ async function applyNet(prefix){
     }
     if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
 
-    const applied = j.applied || {};
-    const newIp = String(applied.address || "").trim();
-    const note = j.note ||
-      ((LANG === "es") ? "Red actualizada." : "Network settings applied.");
+    const note = j.note || (
+      LANG === "es"
+        ? "Red aplicada correctamente."
+        : "Network settings applied."
+    );
+    toast(note); // small bottom toast for DHCP
 
-    // Show centered popup with optional IP
-    showNetPopup(note, newIp || null);
-
-    // Refresh visible values after a short delay
-    setTimeout(async () => {
-      try {
-        await fillNet(prefix);
-        const curIp = (n.curip?.value || "").trim();
-        if (!newIp && curIp && curIp !== prevIp) {
-          // Backend didn’t send IP → show it as a toast hint
-          toast(
-            (LANG === "es")
-              ? `Nueva IP: ${curIp}`
-              : `New IP address: ${curIp}`
-          );
-        }
-      } catch (e) {
-        console.error("fillNet after applyNet failed:", e);
-      }
-    }, 1500);
-
+    setTimeout(() => fillNet(prefix).catch(console.error), 1500);
   } catch (e) {
-    showNetPopup(
+    toast(
       (LANG === "es"
         ? "Error al aplicar la red: "
-        : "Failed to apply network: ")
-      + (e && e.message ? e.message : e)
+        : "Failed to apply network: ") + (e?.message || e)
     );
   }
 }
+
 
 
 
@@ -1824,6 +1883,20 @@ document.addEventListener("keydown", (e) => {
 
   $("btnSave").onclick = async ()=>{
   const btn=$("btnSave"); btn.disabled=true; const original=btn.textContent; btn.textContent = (LANG==="es"?"Guardando…":"Saving…");
+
+  // ---- Show network popup (only if static is selected) ----
+  const admNet = getNet("adm");   // uses the same helper you already have
+  if (admNet.modeStatic && admNet.modeStatic.checked) {
+    const newIp = (admNet.ip?.value || "").trim();
+    if (newIp) {
+      const msg = (LANG === "es")
+        ? "La red estática se aplicará. Si el equipo cambia de IP, use esta dirección para volver a entrar."
+        : "Static network will be applied. If the device changes IP, use this address to reconnect.";
+      // This is your centered popup (the one we created earlier)
+      showNetPopup(msg, newIp);
+    }
+  }
+
 
   // ---- TCP port validation
   const tcpPortVal = +$("tcp_port").value;

@@ -7,11 +7,11 @@
     }
   },
   "network": {
-    "mode": "static",
+    "mode": "dhcp",
     "iface": "eth0",
     "static": {
-      "address": "192.168.0.11",
-      "netmask": "255.255.255.240",
+      "address": "192.168.0.79",
+      "netmask": "255.255.255.0",
       "gateway": "192.168.0.10",
       "dns": [
         "8.8.8.8",
@@ -24,31 +24,31 @@
     "poll_period_s": 1.0
   },
   "mirror_rtu": {
-    "slave_id": 2,
-    "baudrate": 9600,
-    "parity": "N",
+    "slave_id": 79,
+    "baudrate": 4800,
+    "parity": "O",
     "stopbits": 1,
     "bytesize": 8
   },
   "tcp": {
-    "port": 1503
+    "port": 2025
   },
   "local_units": {
     "unit0_id": 1,
-    "unit1_id": 2
+    "unit1_id": 85
   },
   "hr": {
     "start": 0,
     "count": 24
   },
   "branding": {
-    "phone": "011-4639-8310",
-    "email": "info@adaxtecna.com",
+    "phone": "011-4639-8322",
+    "email": "info@adaxtecna.com.ER",
     "youtube": "https://www.youtube.com/@adaxtecna",
     "logo_url": "/static/adax_logo.png",
     "qr_url": ""
   },
   "device": {
-    "model": "110/30-T6P"
+    "model": "110/30-NC-T6P-TI-DNP"
   }
 }
