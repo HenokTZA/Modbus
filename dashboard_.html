@@ -30,7 +30,6 @@
   .modal{background:#0f1830;border:1px solid #223;border-radius:14px;width:min(820px,92vw);max-height:86vh;overflow:auto}
   .modal header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #223;padding:12px 16px}
   .modal .content{padding:16px}
-
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
   label{font-size:12px;color:#9ab}
   input,select{width:100%;padding:8px;border-radius:10px;border:1px solid #223;background:#0b1220;color:#e8eefc}
@@ -184,7 +183,7 @@
   border-radius:6px;
   text-align:center;      /* center the text inside the pill */
 }
-.model-line  > span { color:#062e46 }
+.model-line span{color:#062e46}
 
 /* Responsive: stack nicely on small screens */
 @media (max-width: 900px){
@@ -276,16 +275,9 @@
 
     <!-- Right: centered model/serial line -->
     <div class="top-model">
-       
       <div class="model-line">
         <span id="modelLine">RECTIFICADOR ADAX TECNA MODELO: CEA â€” NÂ° SERIE: â€”</span>
       </div>
-       
-      <!--
-      <div class="model-line">
-        <span id="modelLine">RECTIFICADOR ADAX TECNA MODELO: <span class="model-name">CEA</span> — N° SERIE: —</span>
-      </div>
-      -->
     </div>
   </div>
 </div>
@@ -606,7 +598,7 @@
           <input
   id="device_model"
   placeholder="CEA-..."
-  
+  style="background:#1d4ed8;border-color:#60a5fa;color:#ffffff;font-weight:600;"
 >
 
 
@@ -1200,7 +1192,6 @@ async function changePin(role, oldPin, newPin){
 
   let LANG = localStorage.getItem("lang") || "es";
   let CURRENT_SETTINGS_ROLE = null; // 'user' | 'admin'
-  let CURRENT_MODEL = "CEA";
 
   const names = [
     "BATTERY_VOLTAGE_V","LOAD_VOLTAGE_V","BATTERY_CURRENT_A","LOAD_CURRENT_A","TOTAL_CURRENT_A",
@@ -1343,23 +1334,12 @@ const $ = (id) => document.getElementById(id) || __DUMMY;
                    : t("pinTitle");
     $("i.pinTitle").textContent = pinTitle;
   }
-  
-function applyModelLine(model, serialRaw) {
-  const m = model || "CEA";
-  CURRENT_MODEL = m;  // remember current model globally
 
-  const serial = serialRaw !== "" ? serialRaw : "—";
-  const base = t("modelBase", { model: m });
-
-  $("modelLine").innerHTML = base.replace(
-    m,
-    `<span style="color:#3139D4;font-weight:bold">${m}</span>`
-  ) + serial;
-
-  $("modelLine").dataset.base = base;
-}
-
-
+  function applyModelLine(model, serialRaw){
+    const base = t("modelBase", {model: model || "CEA"});
+    $("modelLine").textContent = base + (serialRaw!=="" ? serialRaw : "â€”");
+    $("modelLine").dataset.base = base;
+  }
 
   /* ==================== ACCESS GATE ==================== */
     function showGate(){ $("gate").style.display="flex"; $("gatePin").focus(); }
@@ -1750,7 +1730,8 @@ $("btnResetPwNo").onclick = ()=>{
 
     const raw = js.raw || [];
     const serialRaw = (raw.length>23 ? raw[23] : "");
-    applyModelLine(CURRENT_MODEL, serialRaw);
+    const base = $("modelLine").dataset.base || t("modelBase",{model:"CEA"});
+    $("modelLine").textContent = base + (serialRaw!=="" ? serialRaw : "â€”");
 
     const tb = document.querySelector("#tbl tbody");
     if (tb) {

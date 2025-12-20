@@ -250,8 +250,6 @@ def _force_close_tcp_port(port: int):
 
 
 
-
-
 def _filter_user_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
 
@@ -765,10 +763,6 @@ async def rebuild_datastores_and_context():
     tcp_slaves = {u0: new0, u1: new1}
     if mirror_id not in tcp_slaves:
         tcp_slaves[mirror_id] = new1
-
-    # Grace period: keep previous mirror ID valid on TCP as well
-    #if PREV_MIRROR_ID and PREV_MIRROR_ID != mirror_id and time.monotonic() < PREV_EXPIRY:
-        #tcp_slaves.setdefault(PREV_MIRROR_ID, new1)
 
     mirror_map = {mirror_id: new1}
     #if PREV_MIRROR_ID and PREV_MIRROR_ID != mirror_id and time.monotonic() < PREV_EXPIRY:
@@ -1291,44 +1285,6 @@ try:
     import yaml
 except Exception:
     yaml = None
-"""
-def _detect_system_mode_eth0() -> str:
-    # --- Prefer netplan files ---
-    for p in glob.glob("/etc/netplan/*.yaml"):
-        try:
-            with open(p, "r") as f:
-                txt = f.read()
-
-            if yaml:
-                y = yaml.safe_load(txt) or {}
-                nets = (y.get("network", {}) or {}).get("ethernets", {}) or {}
-                eth  = nets.get("eth0") or (next(iter(nets.values())) if nets else {})
-                if isinstance(eth, dict):
-                    if eth.get("dhcp4") is True:
-                        return "dhcp"
-                    if eth.get("addresses"):     # any static addresses configured
-                        return "static"
-            else:
-                # lightweight fallback if PyYAML isn't present
-                if "dhcp4: true" in txt:
-                    return "dhcp"
-                if "addresses:" in txt:
-                    return "static"
-        except Exception:
-            pass
-
-    # --- systemd-networkd lease (another DHCP hint) ---
-    try:
-        for lp in glob.glob("/run/systemd/netif/leases/*"):
-            with open(lp, "r") as f:
-                t = f.read()
-            if "ADDRESS=" in t and ("ROUTER=" in t or "SERVER_ADDRESS=" in t):
-                return "dhcp"
-    except Exception:
-        pass
-
-    return "dhcp"
-"""
 
 
 def _detect_system_mode_eth0() -> str:
@@ -1397,101 +1353,6 @@ def serial_status():
             "bytesize": int(mr.get("bytesize", 8)),
         }
     }
-
-"""
-@app.get("/api/network")
-def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
-    s = S().get("network", {}) or {}
-    iface_current, ip_current = _detect_primary_iface_and_ip()
-    gw_current = _detect_default_gateway()
-    dns_current = _detect_dns()
-
-    saved = {
-        "mode": s.get("mode","dhcp"),
-        "iface": s.get("iface", iface_current or "eth0"),
-        "static": {
-            "address": ((s.get("static") or {}).get("address") or ""),
-            "netmask": ((s.get("static") or {}).get("netmask") or ""),
-            "gateway": ((s.get("static") or {}).get("gateway") or ""),
-            "dns":     ((s.get("static") or {}).get("dns") or ["8.8.8.8","1.1.1.1"]),
-        }
-    }
-    return {
-        "current": {"iface": iface_current, "ip": ip_current, "gateway": gw_current, "dns": dns_current},
-        "saved": saved,
-        "note": "DHCP is default. Switching to static may disconnect your browser if IP/network changes."
-    }
-"""
-
-"""
-@app.get("/api/network")
-def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
-    s = S().get("network", {}) or {}
-    iface_current, ip_current = _detect_primary_iface_and_ip()
-    gw_current = _detect_default_gateway()
-    dns_current = _detect_dns()
-    mode_current = _detect_system_mode_eth0()     # <<< NEW
-
-    saved = {
-        "mode": s.get("mode","dhcp"),
-        "iface": s.get("iface", iface_current or "eth0"),
-        "static": {
-            "address": ((s.get("static") or {}).get("address") or ""),
-            "netmask": ((s.get("static") or {}).get("netmask") or ""),
-            "gateway": ((s.get("static") or {}).get("gateway") or ""),
-            "dns":     ((s.get("static") or {}).get("dns") or ["8.8.8.8","1.1.1.1"]),
-        }
-    }
-    return {
-        "current": {
-            "iface": iface_current,
-            "ip": ip_current,
-            "gateway": gw_current,
-            "dns": dns_current,
-            "mode": mode_current,               # <<< NEW
-        },
-        "saved": saved,
-        "note": "DHCP is default. Switching to static may disconnect your browser if IP/network changes."
-    }
-"""
-
-"""
-@app.get("/api/network")
-def api_network_get(_=Depends(require_any_scope(["admin","user","dashboard"]))):
-    s = S().get("network", {}) or {}
-    iface_current, ip_current = _detect_primary_iface_and_ip()
-    gw_current = _detect_default_gateway()
-    dns_current = _detect_dns()
-
-    # Effective mode: prefer a runtime marker if your /usr/local/bin/netcfg-apply writes it
-    effective_mode = s.get("mode", "dhcp")
-    try:
-        with open("/run/netcfg-mode", "r") as f:
-            mark = (f.read() or "").strip().lower()
-            if mark in ("dhcp", "static"):
-                effective_mode = mark
-    except FileNotFoundError:
-        # Fallback heuristic: if live IP equals saved static IP → static
-        st = (s.get("static") or {})
-        if ip_current and st.get("address") and ip_current == st["address"]:
-            effective_mode = "static"
-
-    saved = {
-        "mode": s.get("mode","dhcp"),
-        "iface": s.get("iface", iface_current or "eth0"),
-        "static": {
-            "address": ((s.get("static") or {}).get("address") or ""),
-            "netmask": ((s.get("static") or {}).get("netmask") or ""),
-            "gateway": ((s.get("static") or {}).get("gateway") or ""),
-            "dns":     ((s.get("static") or {}).get("dns") or ["8.8.8.8","1.1.1.1"]),
-        }
-    }
-    return {
-        "current": {"iface": iface_current, "ip": ip_current, "gateway": gw_current, "dns": dns_current, "mode": effective_mode},
-        "saved": saved,
-        "note": "DHCP is default. Switching to static may disconnect your browser if IP/network changes."
-    }
-"""
 
 
 from pathlib import Path
@@ -2021,12 +1882,6 @@ async def put_settings(
 
     prev_mirror_slave = prev_mr.get("slave_id")
     new_mirror_slave  = new_mr.get("slave_id")
-
-    #if prev_mirror_slave != new_mirror_slave:
-        #global PREV_MIRROR_ID, PREV_EXPIRY
-        #PREV_MIRROR_ID = prev_mirror_slave
-        #PREV_EXPIRY = time.monotonic() + 60  # keep old ID alive for 60s
-
 
     # ----- rebuild contexts when hr window / units / mirror slave changed
     need_rebuild = (
